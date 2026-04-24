@@ -1,0 +1,27 @@
+fafnirプレイ方法
+
+・準備
+1.pythonをインストールしていない場合インストール
+2.内部の「project」ファイルをvscode(または任意のターミナル)で開く
+3.「python -m venv venv」を実行する (pythonの仮想環境を立てる)
+4.「./venv/Scripts/activate」を実行する (pythonの仮想環境を実行する)
+5.「pip install -r requirements.txt」を実行する (ライブラリをダウンロードする)
+
+・クライアントでゲームをプレイする (自分で操作する)
+「python clients\human_cli.py --url [サーバーIPアドレス]:8765 --room room1 --name [ユーザー名]」を実行する
+※[サーバーIPアドレス]にはサーバーを立てているPCのローカルIPアドレスを、[ユーザー名]にはいい感じの名前を入れる
+
+・AIボットを入れる
+「python clients\ai_bot_sample.py --url [サーバーIPアドレス]:8765 --room room1 --name [ユーザー名]」を実行する
+※[サーバーIPアドレス]にはサーバーを立てているPCのローカルIPアドレスを、[ユーザー名]にはいい感じの名前を入れる
+
+・観戦者を入れる
+「python clients\spectator_gui.py --url [サーバーIPアドレス]:8765 --room room1」を実行する
+※[サーバーIPアドレス]にはサーバーを立てているPCのローカルIPアドレスを入れる
+
+・サーバーを立てる
+1.ngrokをインストールする https://dashboard.ngrok.com/login からアカウントを作成してダウンロード
+2.ターミナルで「ngrok config add-authtoken [ngrokのトークン]」を実行する
+※[ngrokのトークン]には https://dashboard.ngrok.com/get-started/your-authtoken にあるトークンを入れる
+3.「uvicorn server:socket_app --host 0.0.0.0 --port 8765」を実行する (server.pyを起動)
+4.「ngrok http 8765」を実行する

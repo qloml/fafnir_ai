@@ -1,0 +1,14 @@
+fastapi
+python-socketio
+aiohttp
+uvicorn
+
+python-socketio[asyncio_client]
+
+# RL dependencies
+gymnasium
+stable-baselines3
+sb3-contrib
+tensorboard
+numpy
+torch
