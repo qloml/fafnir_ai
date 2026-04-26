@@ -76,54 +76,145 @@ def _trash_to_counts(trash: Any) -> np.ndarray:
     return counts
 
 
+# Known-hand tracking (updated each auction from server state)
+_known = np.zeros((2, N_COLORS), dtype=np.int32)  # confirmed stones per player
+_prev_round = -1  # track round changes to reset known hands
+
+
+def _rank_colors_from_hands(my_counts, opp_total_counts):
+    """Approximate color ranking from known info. Uses my hand + best guess for opponent."""
+    # For potential score, we need total counts across both players for non-gold colors
+    totals = []
+    for c in range(1, N_COLORS):
+        t = int(my_counts[c]) + int(opp_total_counts[c])
+        totals.append((c, t))
+    totals.sort(key=lambda x: (-x[1], x[0]))
+    return totals
+
+
+def _compute_potential_from_counts(hand_counts, opp_counts):
+    """Compute the expected round-end score for the player."""
+    ranked = _rank_colors_from_hands(hand_counts, opp_counts)
+    first_c = ranked[0][0] if ranked else 1
+    second_c = ranked[1][0] if len(ranked) > 1 else 2
+
+    score = int(hand_counts[0])  # gold
+    for c in range(1, N_COLORS):
+        cnt = int(hand_counts[c])
+        if cnt == 0 or cnt >= 5:
+            continue
+        if c == first_c:
+            score += cnt * 3
+        elif c == second_c:
+            score += cnt * 2
+        else:
+            score -= cnt
+    return score
+
+
+def update_known_from_state(st: Dict[str, Any], player_idx: int):
+    """Update known-hand tracking from server state (call each state_update)."""
+    global _known, _prev_round
+
+    current_round = st.get("round", 1)
+    if current_round != _prev_round:
+        # Round changed — reset known hands
+        _known[:] = 0
+        _prev_round = current_round
+
+    # Check last_result for new auction info
+    lr = st.get("last_result") or {}
+    winner = lr.get("winner")
+    if winner is None:
+        return
+
+    try:
+        wi = int(winner)
+    except Exception:
+        return
+    li = 1 - wi
+
+    # Get bids
+    bids_by_player = lr.get("bids_by_player")
+    if isinstance(bids_by_player, list) and len(bids_by_player) >= 2:
+        w_bid = _stones_to_counts(bids_by_player[wi] or [])
+        l_bid = _stones_to_counts(bids_by_player[li] or [])
+    else:
+        w_bid = _stones_to_counts(lr.get("winner_bid") or [])
+        l_bid = _stones_to_counts(lr.get("loser_bid") or [])
+
+    # Get offer that was competed for
+    offer_counts = _stones_to_counts(st.get("last_offer") or lr.get("offer") or [])
+
+    # Update known hands
+    for c in range(N_COLORS):
+        val = _known[wi, c] + offer_counts[c] - w_bid[c]
+        _known[wi, c] = max(0, val)
+        _known[li, c] = max(_known[li, c], int(l_bid[c]))
+
+
 def state_to_obs(st: Dict[str, Any], player_idx: int, score_to_win: int = 1000) -> np.ndarray:
-    """Convert server state_update dict to 25-dim observation vector."""
-    obs = np.zeros(25, dtype=np.float32)
+    """Convert server state_update dict to 36-dim observation vector."""
+    obs = np.zeros(36, dtype=np.float32)
     ps = st.get("players") or []
     other_idx = 1 - player_idx
 
     # 0-5: my hand counts
+    hand_counts = np.zeros(N_COLORS, dtype=np.int32)
     if player_idx < len(ps):
         hand = ps[player_idx].get("hand") or []
         hand_counts = _stones_to_counts(hand)
         for c in range(N_COLORS):
             obs[c] = hand_counts[c] / max(1, INITIAL_BAG[c])
 
-    # 6-11: offer
+    # 6-11: offer (use 10 as max for multi-stone offers)
     offer = st.get("offer") or []
     offer_counts = _stones_to_counts(offer)
     for c in range(N_COLORS):
-        obs[6 + c] = offer_counts[c] / 2.0
+        obs[6 + c] = offer_counts[c] / 10.0
 
     # 12-17: trash
     trash_counts = _trash_to_counts(st.get("trash") or {})
     for c in range(N_COLORS):
         obs[12 + c] = trash_counts[c] / float(TRASH_LIMIT)
 
-    # 18: my score
+    # 18-23: opponent's confirmed hand
+    for c in range(N_COLORS):
+        obs[18 + c] = _known[other_idx, c] / max(1, INITIAL_BAG[c])
+
+    # 24: opponent's unknown stone count
+    opp_total = 0
+    if other_idx < len(ps):
+        opp_total = ps[other_idx].get("hand_count", 0)
+    opp_known_total = int(_known[other_idx].sum())
+    opp_unknown = max(0, opp_total - opp_known_total)
+    obs[24] = opp_unknown / 15.0
+
+    # 25-30: my confirmed hand (what opponent knows about me)
+    for c in range(N_COLORS):
+        obs[25 + c] = _known[player_idx, c] / max(1, INITIAL_BAG[c])
+
+    # 31: my score
     if player_idx < len(ps):
-        obs[18] = ps[player_idx].get("score", 0) / float(max(1, score_to_win))
+        obs[31] = ps[player_idx].get("score", 0) / float(max(1, score_to_win))
 
-    # 19: opponent score
+    # 32: opponent score
     if other_idx < len(ps):
-        obs[19] = ps[other_idx].get("score", 0) / float(max(1, score_to_win))
+        obs[32] = ps[other_idx].get("score", 0) / float(max(1, score_to_win))
 
-    # 20: opponent hand count
-    if other_idx < len(ps):
-        obs[20] = ps[other_idx].get("hand_count", 0) / 15.0
+    # 33: bag remaining
+    obs[33] = st.get("bag_left", 0) / float(max(1, sum(INITIAL_BAG)))
 
-    # 21: bag remaining
-    obs[21] = st.get("bag_left", 0) / float(max(1, sum(INITIAL_BAG)))
+    # 34: am I caretaker
+    obs[34] = 1.0 if st.get("caretaker") == player_idx else 0.0
 
-    # 22: am I caretaker
-    obs[22] = 1.0 if st.get("caretaker") == player_idx else 0.0
-
-    # 23: round number
-    obs[23] = min(st.get("round", 1) / 20.0, 1.0)
-
-    # 24: did I win the last auction
-    lr = st.get("last_result") or {}
-    obs[24] = 1.0 if lr.get("winner") == player_idx else 0.0
+    # 35: my hand's current potential score
+    # Approximate opponent hand for ranking: use known + distribute unknown evenly
+    opp_approx = np.zeros(N_COLORS, dtype=np.int32)
+    for c in range(N_COLORS):
+        opp_approx[c] = _known[other_idx, c]
+    potential = _compute_potential_from_counts(hand_counts, opp_approx)
+    obs[35] = (potential + 15.0) / 75.0
 
     return np.clip(obs, 0.0, 1.0)
 
@@ -286,6 +377,9 @@ async def player_assigned(data):
 async def state_update(state):
     global last_state, _ok_sent_key
     last_state = state
+    # Update known-hand tracking
+    if my_index is not None:
+        update_known_from_state(state, my_index)
     ph = phase_of(state)
     if ph not in ("RESULT", "ROUND_END"):
         _ok_sent_key = None

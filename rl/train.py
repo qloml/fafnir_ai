@@ -302,7 +302,7 @@ def main():
     ap = argparse.ArgumentParser(description="Train FAFNIR RL agent")
     ap.add_argument("--total-steps", type=int, default=500_000,
                     help="Total training timesteps")
-    ap.add_argument("--score-to-win", type=int, default=30,
+    ap.add_argument("--score-to-win", type=int, default=40,
                     help="Score to win (lower = shorter episodes)")
     ap.add_argument("--max-turns", type=int, default=500,
                     help="Max turns per episode before truncation")

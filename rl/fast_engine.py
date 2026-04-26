@@ -2,6 +2,8 @@
 """
 Numba JIT-compiled FAFNIR game engine for fast RL training.
 All game logic as pure functions operating on numpy arrays.
+
+Observation space: 36 dimensions (see build_obs for details).
 """
 import numpy as np
 from numba import njit
@@ -16,6 +18,8 @@ S_CT = 0; S_RND = 1; S_TURN = 2; S_TOTAL = 3; S_LAST_W = 4
 STATE_SIZE = 5
 INITIAL_BAG = np.array([20, 12, 12, 12, 12, 12], dtype=np.int32)
 BAG_TOTAL = 80
+
+OBS_DIM = 36
 
 # ---------- primitives ----------
 
@@ -142,10 +146,52 @@ def _hand_score(hands, player, first_c, second_c):
     return score
 
 
+@njit(cache=True)
+def _compute_potential(hands, player):
+    """Compute the expected round-end score for a player given current hands.
+    This is used for potential-based reward shaping.
+    """
+    ranked_idx, _ = _rank_colors(hands)
+    first_c = ranked_idx[0]
+    second_c = ranked_idx[1]
+    return _hand_score(hands, player, first_c, second_c)
+
+
+# ---------- known hand tracking ----------
+
+@njit(cache=True)
+def _update_known_hands(known, winner, loser, w_bid, offer, l_bid):
+    """Update known-hand tracking arrays after an auction.
+
+    known: shape (2, N_COLORS) — minimum stones each player is known to hold.
+
+    Rules:
+    - Winner gained offer (public) and lost w_bid to trash (public).
+      known[winner] += offer - w_bid, clamped >= 0 per color.
+    - Loser's bid was revealed but stones stay. We know they have at least l_bid.
+      known[loser] = max(known[loser], l_bid) per color.
+    """
+    for c in range(N_COLORS):
+        # Winner: net change from offer gained minus bid lost
+        val = known[winner, c] + offer[c] - w_bid[c]
+        known[winner, c] = max(np.int32(0), val)
+        # Loser: bid was revealed, they still have those stones
+        if l_bid[c] > known[loser, c]:
+            known[loser, c] = l_bid[c]
+
+
+@njit(cache=True)
+def _reset_known_hands(known):
+    """Reset known hands at round start (all cards re-dealt from bag)."""
+    for p in range(2):
+        for c in range(N_COLORS):
+            known[p, c] = np.int32(0)
+
+
 # ---------- round end ----------
 
 @njit(cache=True)
-def _do_round_end(hands, bag, trash, offer, scores, state):
+def _do_round_end(hands, bag, trash, offer, scores, state, known):
     ranked_idx, _ = _rank_colors(hands)
     first_c = ranked_idx[0]
     second_c = ranked_idx[1]
@@ -155,7 +201,7 @@ def _do_round_end(hands, bag, trash, offer, scores, state):
     scores[1] = _clamp(scores[1] + add1)
     round_reward = np.float32(add0 - add1) * np.float32(0.02)
 
-    # Reset
+    # Reset for new round
     for c in range(N_COLORS):
         bag[c] = INITIAL_BAG[c]
         trash[c] = np.int32(0)
@@ -176,35 +222,86 @@ def _do_round_end(hands, bag, trash, offer, scores, state):
         offer[c2] = new_offer[c2]
     state[S_RND] += np.int32(1)
     state[S_TURN] = np.int32(1)
+
+    # Reset known hands (new cards dealt)
+    _reset_known_hands(known)
+
     return round_reward
 
 
 # ---------- obs / mask ----------
 
 @njit(cache=True)
-def build_obs(hands, bag, trash, offer, scores, state, player, score_to_win):
+def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_win):
+    """Build 36-dim observation vector for the given player.
+
+    Layout:
+      0- 5: My hand (6) — normalized by max possible per color
+      6-11: Current offer (6) — normalized by 10
+     12-17: Trash (6) — normalized by TRASH_LIMIT
+     18-23: Opponent's confirmed hand (6) — normalized by max possible
+     24   : Opponent's unknown stone count (1) — normalized by 15
+     25-30: My confirmed hand (what opponent knows about me) (6) — normalized
+     31   : My score — normalized by score_to_win
+     32   : Opponent's score — normalized by score_to_win
+     33   : Bag remaining — normalized by BAG_TOTAL
+     34   : Am I the caretaker? (0 or 1)
+     35   : My hand's current potential score — normalized
+    """
     other = np.int32(1 - player)
-    obs = np.zeros(25, dtype=np.float32)
+    obs = np.zeros(OBS_DIM, dtype=np.float32)
+
+    # 0-5: My hand
     for c in range(N_COLORS):
         obs[c] = np.float32(hands[player, c]) / max(np.float32(1), np.float32(INITIAL_BAG[c]))
+
+    # 6-11: Offer (use 10 as max to handle potential multi-stone offers)
     for c in range(N_COLORS):
-        obs[6 + c] = np.float32(offer[c]) / np.float32(2)
+        obs[6 + c] = np.float32(offer[c]) / np.float32(10)
+
+    # 12-17: Trash
     for c in range(N_COLORS):
         obs[12 + c] = np.float32(trash[c]) / np.float32(TRASH_LIMIT)
-    obs[18] = np.float32(scores[player]) / max(np.float32(1), np.float32(score_to_win))
-    obs[19] = np.float32(scores[other]) / max(np.float32(1), np.float32(score_to_win))
-    oht = np.int32(0)
+
+    # 18-23: Opponent's confirmed hand
     for c in range(N_COLORS):
-        oht += hands[other, c]
-    obs[20] = np.float32(oht) / np.float32(15)
+        obs[18 + c] = np.float32(known[other, c]) / max(np.float32(1), np.float32(INITIAL_BAG[c]))
+
+    # 24: Opponent's unknown stone count
+    opp_total = np.int32(0)
+    opp_known_total = np.int32(0)
+    for c in range(N_COLORS):
+        opp_total += hands[other, c]
+        opp_known_total += known[other, c]
+    opp_unknown = max(np.int32(0), opp_total - opp_known_total)
+    obs[24] = np.float32(opp_unknown) / np.float32(15)
+
+    # 25-30: My confirmed hand (what opponent can see/deduce about me)
+    for c in range(N_COLORS):
+        obs[25 + c] = np.float32(known[player, c]) / max(np.float32(1), np.float32(INITIAL_BAG[c]))
+
+    # 31: My score
+    obs[31] = np.float32(scores[player]) / max(np.float32(1), np.float32(score_to_win))
+
+    # 32: Opponent's score
+    obs[32] = np.float32(scores[other]) / max(np.float32(1), np.float32(score_to_win))
+
+    # 33: Bag remaining
     bl = np.int32(0)
     for c in range(N_COLORS):
         bl += bag[c]
-    obs[21] = np.float32(bl) / np.float32(BAG_TOTAL)
-    obs[22] = np.float32(1) if state[S_CT] == player else np.float32(0)
-    obs[23] = min(np.float32(state[S_RND]) / np.float32(20), np.float32(1))
-    obs[24] = np.float32(1) if state[S_LAST_W] == player else np.float32(0)
-    for i in range(25):
+    obs[33] = np.float32(bl) / np.float32(BAG_TOTAL)
+
+    # 34: Am I the caretaker?
+    obs[34] = np.float32(1) if state[S_CT] == player else np.float32(0)
+
+    # 35: My hand's current potential score (normalized)
+    potential = _compute_potential(hands, player)
+    # Normalize: theoretical range is roughly -15 to +60, use 30 as midpoint scale
+    obs[35] = np.float32(potential + 15) / np.float32(75)
+
+    # Clamp all to [0, 1]
+    for i in range(OBS_DIM):
         obs[i] = max(np.float32(0), min(np.float32(1), obs[i]))
     return obs
 
@@ -243,15 +340,20 @@ def fast_reset(score_to_win):
         trash[c] += seeded[c]
     offer = _setup_offer(bag)
     state = np.array([ct, 1, 1, 0, -1], dtype=np.int32)
-    return hands, bag, trash, offer, scores, state
+    # Initialize known hands (nothing known at game start)
+    known = np.zeros((2, N_COLORS), dtype=np.int32)
+    return hands, bag, trash, offer, scores, state, known
 
 
 @njit(cache=True)
-def fast_step(hands, bag, trash, offer, scores, state,
+def fast_step(hands, bag, trash, offer, scores, state, known,
               bid0, bid1, score_to_win, max_turns):
     """Returns (reward, terminated, truncated). Modifies arrays in-place."""
     state[S_TOTAL] += np.int32(1)
     ct = state[S_CT]
+
+    # Compute potential BEFORE the step (for reward shaping)
+    pot_before = _compute_potential(hands, np.int32(0))
 
     s0_before = scores[0]; s1_before = scores[1]
     c0 = np.int32(0); c1 = np.int32(0)
@@ -275,6 +377,8 @@ def fast_step(hands, bag, trash, offer, scores, state,
             winner = np.int32(1) if ct == 0 else np.int32(0)
         loser = np.int32(1 - winner)
         w_bid = bid0 if winner == 0 else bid1
+        l_bid = bid1 if winner == 0 else bid0
+
         for c in range(N_COLORS):
             hands[winner, c] -= w_bid[c]
             trash[c] += w_bid[c]
@@ -283,8 +387,17 @@ def fast_step(hands, bag, trash, offer, scores, state,
         scores[winner] += np.int32(1)
         state[S_CT] = winner
 
+        # Update known hands
+        _update_known_hands(known, winner, loser, w_bid, offer, l_bid)
+
     state[S_LAST_W] = winner
+
+    # Score-based reward
     reward = np.float32(scores[0] - s0_before - (scores[1] - s1_before)) * np.float32(0.02)
+
+    # Potential-based reward shaping: reward change in expected hand value
+    pot_after = _compute_potential(hands, np.int32(0))
+    reward += np.float32(pot_after - pot_before) * np.float32(0.005)
 
     # Game end check
     if scores[0] >= score_to_win:
@@ -303,7 +416,7 @@ def fast_step(hands, bag, trash, offer, scores, state,
     bag_low = bl < 2
 
     if trash_hit or bag_low:
-        rr = _do_round_end(hands, bag, trash, offer, scores, state)
+        rr = _do_round_end(hands, bag, trash, offer, scores, state, known)
         reward += rr
         if scores[0] >= score_to_win:
             return reward + np.float32(1.0), True, False
@@ -330,12 +443,14 @@ def fast_step(hands, bag, trash, offer, scores, state,
 
 def warmup():
     """Pre-compile all Numba functions."""
-    hands, bag, trash, offer, scores, state = fast_reset(np.int32(30))
-    _ = build_obs(hands, bag, trash, offer, scores, state, np.int32(0), np.int32(30))
+    hands, bag, trash, offer, scores, state, known = fast_reset(np.int32(30))
+    _ = build_obs(hands, bag, trash, offer, scores, state, known,
+                  np.int32(0), np.int32(30))
     _ = build_mask(hands, offer, np.int32(0))
     bid0 = np.zeros(N_COLORS, dtype=np.int32)
     bid1 = np.zeros(N_COLORS, dtype=np.int32)
-    _ = fast_step(hands, bag, trash, offer, scores, state, bid0, bid1, np.int32(30), np.int32(500))
+    _ = fast_step(hands, bag, trash, offer, scores, state, known,
+                  bid0, bid1, np.int32(30), np.int32(500))
 
 
 if __name__ == "__main__":
@@ -347,7 +462,7 @@ if __name__ == "__main__":
     episodes = 1000
     total_steps = 0
     for _ in range(episodes):
-        h, b, tr, o, sc, st = fast_reset(np.int32(30))
+        h, b, tr, o, sc, st, kn = fast_reset(np.int32(30))
         done = False
         while not done:
             mask = build_mask(h, o, np.int32(0))
@@ -365,7 +480,8 @@ if __name__ == "__main__":
                     bid0[c] = min(np.int32(act[c]), h[0, c])
                     
             bid1 = _random_bid(h[1], o)
-            r, term, trunc = fast_step(h, b, tr, o, sc, st, bid0, bid1, np.int32(30), np.int32(500))
+            r, term, trunc = fast_step(h, b, tr, o, sc, st, kn,
+                                       bid0, bid1, np.int32(30), np.int32(500))
             done = term or trunc
             total_steps += 1
     elapsed = time.perf_counter() - t0

@@ -201,7 +201,7 @@ class FafnirEnv(gymnasium.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, score_to_win: int = 30, max_turns: int = 500,
+    def __init__(self, score_to_win: int = 40, max_turns: int = 500,
                  opponent=None, render_mode=None):
         super().__init__()
 
@@ -212,7 +212,7 @@ class FafnirEnv(gymnasium.Env):
 
         # Spaces
         self.observation_space = spaces.Box(
-            low=0.0, high=1.0, shape=(25,), dtype=np.float32
+            low=0.0, high=1.0, shape=(36,), dtype=np.float32
         )
         self.action_space = spaces.MultiDiscrete(
             [MAX_BID_PER_COLOR + 1] * N_COLORS
@@ -238,6 +238,7 @@ class FafnirEnv(gymnasium.Env):
         self.turn_num = 1
         self.total_turns = 0
         self.last_winner = -1
+        self.known = np.zeros((2, N_COLORS), dtype=np.int32)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -261,43 +262,57 @@ class FafnirEnv(gymnasium.Env):
 
         return self._get_obs(0), self._get_info()
 
+    def _compute_potential(self, player: int) -> float:
+        """Compute expected round-end score for a player given current hands."""
+        ranked = rank_colors_by_total(self.hands)
+        return float(compute_hand_score(self.hands, player, ranked))
+
     def _get_obs(self, player: int) -> np.ndarray:
-        """Build 25-dim observation from player's perspective."""
+        """Build 36-dim observation from player's perspective."""
         other = 1 - player
-        obs = np.zeros(25, dtype=np.float32)
+        obs = np.zeros(36, dtype=np.float32)
 
         # 0-5: my hand counts (normalized by max possible)
         for c in range(N_COLORS):
             obs[c] = self.hands[player, c] / max(1, INITIAL_BAG[c])
 
-        # 6-11: offer counts
+        # 6-11: offer counts (use 10 as max for multi-stone offers)
         for c in range(N_COLORS):
-            obs[6 + c] = self.offer[c] / 2.0
+            obs[6 + c] = self.offer[c] / 10.0
 
         # 12-17: trash counts (normalized by limit)
         for c in range(N_COLORS):
             obs[12 + c] = self.trash[c] / float(TRASH_LIMIT)
 
-        # 18: my score
-        obs[18] = self.scores[player] / float(max(1, self.score_to_win))
+        # 18-23: opponent's confirmed hand
+        for c in range(N_COLORS):
+            obs[18 + c] = self.known[other, c] / max(1, INITIAL_BAG[c])
 
-        # 19: opponent score
-        obs[19] = self.scores[other] / float(max(1, self.score_to_win))
+        # 24: opponent's unknown stone count
+        opp_total = int(self.hands[other].sum())
+        opp_known_total = int(self.known[other].sum())
+        opp_unknown = max(0, opp_total - opp_known_total)
+        obs[24] = opp_unknown / 15.0
 
-        # 20: opponent hand count
-        obs[20] = int(self.hands[other].sum()) / 15.0
+        # 25-30: my confirmed hand (what opponent knows about me)
+        for c in range(N_COLORS):
+            obs[25 + c] = self.known[player, c] / max(1, INITIAL_BAG[c])
 
-        # 21: bag remaining
-        obs[21] = int(self.bag.sum()) / float(max(1, INITIAL_BAG.sum()))
+        # 31: my score
+        obs[31] = self.scores[player] / float(max(1, self.score_to_win))
 
-        # 22: am I caretaker
-        obs[22] = 1.0 if self.caretaker == player else 0.0
+        # 32: opponent score
+        obs[32] = self.scores[other] / float(max(1, self.score_to_win))
 
-        # 23: round number
-        obs[23] = min(self.round_num / 20.0, 1.0)
+        # 33: bag remaining
+        obs[33] = int(self.bag.sum()) / float(max(1, INITIAL_BAG.sum()))
 
-        # 24: did I win the last auction
-        obs[24] = 1.0 if self.last_winner == player else 0.0
+        # 34: am I caretaker
+        obs[34] = 1.0 if self.caretaker == player else 0.0
+
+        # 35: my hand's current potential score
+        potential = self._compute_potential(player)
+        obs[35] = (potential + 15.0) / 75.0
 
         return np.clip(obs, 0.0, 1.0)
 
@@ -368,12 +383,20 @@ class FafnirEnv(gymnasium.Env):
 
         # Winner's bid goes to trash
         winner_bid = bid0 if winner == 0 else bid1
+        loser_bid = bid1 if winner == 0 else bid0
         self.hands[winner] -= winner_bid
         self.trash += winner_bid
 
         # Winner gets offer stones
+        offer_copy = self.offer.copy()
         self.hands[winner] += self.offer
         self.offer = np.zeros(N_COLORS, dtype=np.int32)
+
+        # Update known hands tracking
+        for c in range(N_COLORS):
+            val = self.known[winner, c] + offer_copy[c] - winner_bid[c]
+            self.known[winner, c] = max(0, val)
+            self.known[loser, c] = max(self.known[loser, c], int(loser_bid[c]))
 
         # Winner gets point chip
         self.scores[winner] += POINT_CHIP
@@ -413,6 +436,9 @@ class FafnirEnv(gymnasium.Env):
         self.round_num += 1
         self.turn_num = 1
 
+        # Reset known hands (new cards dealt)
+        self.known = np.zeros((2, N_COLORS), dtype=np.int32)
+
         return adds
 
     def _check_game_end(self) -> Optional[int]:
@@ -445,8 +471,9 @@ class FafnirEnv(gymnasium.Env):
         else:
             bid1 = opponent.choose_bid(self.hands[1], self.offer, self._rng)
 
-        # Store scores before resolution for reward calculation
+        # Store scores and potential before resolution for reward calculation
         scores_before = self.scores.copy()
+        pot_before = self._compute_potential(0)
 
         # Resolve auction
         winner = self._resolve_auction(bid0, bid1)
@@ -456,6 +483,10 @@ class FafnirEnv(gymnasium.Env):
         reward = 0.0
         score_delta = (self.scores[0] - scores_before[0]) - (self.scores[1] - scores_before[1])
         reward += score_delta * 0.02
+
+        # Potential-based reward shaping
+        pot_after = self._compute_potential(0)
+        reward += (pot_after - pot_before) * 0.005
 
         terminated = False
         truncated = False
@@ -518,7 +549,7 @@ class FafnirEnv(gymnasium.Env):
 # Environment factory (for make_vec_env)
 # ==========================================
 
-def make_fafnir_env(score_to_win: int = 30, max_turns: int = 500, opponent=None):
+def make_fafnir_env(score_to_win: int = 40, max_turns: int = 500, opponent=None):
     """Factory function for creating FafnirEnv instances."""
     def _init():
         return FafnirEnv(score_to_win=score_to_win, max_turns=max_turns,
@@ -532,7 +563,7 @@ def make_fafnir_env(score_to_win: int = 30, max_turns: int = 500, opponent=None)
 
 if __name__ == "__main__":
     print("Running FafnirEnv self-test...")
-    env = FafnirEnv(score_to_win=30, max_turns=500)
+    env = FafnirEnv(score_to_win=40, max_turns=500)
 
     wins = {0: 0, 1: 0, "draw": 0}
     total_episodes = 200

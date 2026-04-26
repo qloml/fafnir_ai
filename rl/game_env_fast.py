@@ -2,6 +2,8 @@
 """
 Fast FAFNIR Gymnasium environment using Numba JIT-compiled engine.
 Drop-in replacement for game_env.FafnirEnv (for random opponent training).
+
+Observation: 36-dim vector (see fast_engine.build_obs for layout).
 """
 import numpy as np
 import gymnasium
@@ -9,7 +11,7 @@ from gymnasium import spaces
 
 from rl.fast_engine import (
     fast_reset, fast_step, build_obs, build_mask, warmup, _random_bid,
-    N_COLORS, MAX_BID,
+    N_COLORS, MAX_BID, OBS_DIM,
 )
 from rl.game_env import OpponentManager, ModelOpponent
 
@@ -22,14 +24,14 @@ class FafnirFastEnv(gymnasium.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, score_to_win=30, max_turns=500, opponent=None, render_mode=None):
+    def __init__(self, score_to_win=40, max_turns=500, opponent=None, render_mode=None):
         super().__init__()
         self.score_to_win = np.int32(score_to_win)
         self.max_turns = np.int32(max_turns)
         self.render_mode = render_mode
         self._opponent = opponent
 
-        self.observation_space = spaces.Box(0.0, 1.0, shape=(25,), dtype=np.float32)
+        self.observation_space = spaces.Box(0.0, 1.0, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space = spaces.MultiDiscrete([MAX_BID + 1] * N_COLORS)
 
         self.hands = None
@@ -38,6 +40,7 @@ class FafnirFastEnv(gymnasium.Env):
         self.offer = None
         self.scores = None
         self.state = None
+        self.known = None
 
     def _get_opponent(self):
         if self._opponent is not None:
@@ -52,10 +55,11 @@ class FafnirFastEnv(gymnasium.Env):
         super().reset(seed=seed)
         if seed is not None:
             np.random.seed(seed)
-        self.hands, self.bag, self.trash, self.offer, self.scores, self.state = \
-            fast_reset(self.score_to_win)
+        self.hands, self.bag, self.trash, self.offer, self.scores, \
+            self.state, self.known = fast_reset(self.score_to_win)
         obs = build_obs(self.hands, self.bag, self.trash, self.offer,
-                        self.scores, self.state, np.int32(0), self.score_to_win)
+                        self.scores, self.state, self.known,
+                        np.int32(0), self.score_to_win)
         return obs, self._info()
 
     def step(self, action):
@@ -73,7 +77,8 @@ class FafnirFastEnv(gymnasium.Env):
         opponent = self._get_opponent()
         if isinstance(opponent, ModelOpponent):
             opp_obs = build_obs(self.hands, self.bag, self.trash, self.offer,
-                                self.scores, self.state, np.int32(1), self.score_to_win)
+                                self.scores, self.state, self.known,
+                                np.int32(1), self.score_to_win)
             opp_mask = build_mask(self.hands, self.offer, np.int32(1))
             opp_act = opponent.choose_bid_from_obs(opp_obs, opp_mask)
             bid1 = np.zeros(N_COLORS, dtype=np.int32)
@@ -88,11 +93,12 @@ class FafnirFastEnv(gymnasium.Env):
         # 3. Advance state
         reward, terminated, truncated = fast_step(
             self.hands, self.bag, self.trash, self.offer,
-            self.scores, self.state, bid0, bid1,
+            self.scores, self.state, self.known, bid0, bid1,
             self.score_to_win, self.max_turns,
         )
         obs = build_obs(self.hands, self.bag, self.trash, self.offer,
-                        self.scores, self.state, np.int32(0), self.score_to_win)
+                        self.scores, self.state, self.known,
+                        np.int32(0), self.score_to_win)
         return obs, float(reward), bool(terminated), bool(truncated), self._info()
 
     def valid_action_mask(self):

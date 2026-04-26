@@ -59,14 +59,13 @@ class AggressiveOpponent:
 
 
 def evaluate_model(model_path: str, opponent, opponent_name: str,
-                   n_games: int = 200, score_to_win: int = 30,
+                   n_games: int = 200, score_to_win: int = 40,
                    max_turns: int = 500, deterministic: bool = True):
     """Run n_games and return statistics."""
     env = FafnirEnv(score_to_win=score_to_win, max_turns=max_turns, opponent=opponent)
     env_masked = ActionMasker(env, mask_fn)
 
     model = MaskablePPO.load(model_path)
-
     wins = 0
     losses = 0
     draws = 0
@@ -125,7 +124,7 @@ def main():
     ap = argparse.ArgumentParser(description="Evaluate FAFNIR RL agent")
     ap.add_argument("--model", type=str, required=True, help="Path to trained model")
     ap.add_argument("--games", type=int, default=200, help="Number of games per opponent")
-    ap.add_argument("--score-to-win", type=int, default=30, help="Score to win")
+    ap.add_argument("--score-to-win", type=int, default=40, help="Score to win")
     ap.add_argument("--max-turns", type=int, default=500, help="Max turns per game")
     ap.add_argument("--deterministic", action="store_true", help="Use deterministic policy")
     args = ap.parse_args()
