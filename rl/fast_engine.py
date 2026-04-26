@@ -54,25 +54,31 @@ def _draw_n(bag, n):
 @njit(cache=True)
 def _setup_offer(bag):
     offer = np.zeros(N_COLORS, dtype=np.int32)
+    # Draw 2 stones at a time; if all same color so far, keep drawing
     for _ in range(50):
         total = np.int32(0)
         for i in range(N_COLORS):
             total += bag[i]
         if total == 0:
             break
-        s1 = _draw_one(bag)
-        s2 = np.int32(-1)
-        if total >= 2 and s1 >= 0:
-            s2 = _draw_one(bag)
-        if s2 < 0 or s1 != s2:
-            if s1 >= 0:
-                offer[s1] += np.int32(1)
-            if s2 >= 0:
-                offer[s2] += np.int32(1)
+        draw_count = min(np.int32(2), total)
+        for _ in range(draw_count):
+            c = _draw_one(bag)
+            if c >= 0:
+                offer[c] += np.int32(1)
+        # Check if offer has more than 1 color
+        n_colors_in_offer = np.int32(0)
+        for i in range(N_COLORS):
+            if offer[i] > 0:
+                n_colors_in_offer += np.int32(1)
+        if n_colors_in_offer > 1:
             break
-        else:
-            bag[s1] += np.int32(1)
-            bag[s2] += np.int32(1)
+        # If bag is now empty, stop regardless
+        bag_left = np.int32(0)
+        for i in range(N_COLORS):
+            bag_left += bag[i]
+        if bag_left == 0:
+            break
     return offer
 
 
@@ -379,6 +385,11 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
         w_bid = bid0 if winner == 0 else bid1
         l_bid = bid1 if winner == 0 else bid0
 
+        # Save offer before zeroing (needed for known-hand tracking)
+        offer_snap = np.zeros(N_COLORS, dtype=np.int32)
+        for c in range(N_COLORS):
+            offer_snap[c] = offer[c]
+
         for c in range(N_COLORS):
             hands[winner, c] -= w_bid[c]
             trash[c] += w_bid[c]
@@ -387,8 +398,8 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
         scores[winner] += np.int32(1)
         state[S_CT] = winner
 
-        # Update known hands
-        _update_known_hands(known, winner, loser, w_bid, offer, l_bid)
+        # Update known hands (using saved offer, not the zeroed one)
+        _update_known_hands(known, winner, loser, w_bid, offer_snap, l_bid)
 
     state[S_LAST_W] = winner
 

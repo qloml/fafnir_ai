@@ -58,7 +58,7 @@ def draw_n(bag: np.ndarray, n: int, rng: np.random.Generator) -> np.ndarray:
 
 
 def setup_offer(bag: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Draw 2 stones for the offer. Redraw if both same color."""
+    """Draw 2 stones for the offer. If all same color, keep drawing 2 more until mixed or bag empty."""
     offer = np.zeros(N_COLORS, dtype=np.int32)
     total = int(bag.sum())
     if total == 0:
@@ -69,20 +69,15 @@ def setup_offer(bag: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         if total == 0:
             break
         draw_count = min(2, total)
-        stones = []
         for _ in range(draw_count):
             c = draw_one(bag, rng)
             if c is not None:
-                stones.append(c)
-
-        if len(stones) < 2 or len(set(stones)) > 1:
-            for c in stones:
                 offer[c] += 1
+
+        # Check if offer has more than 1 color
+        n_colors = sum(1 for c in range(N_COLORS) if offer[c] > 0)
+        if n_colors > 1 or int(bag.sum()) == 0:
             break
-        else:
-            # Same color — put back and retry
-            for c in stones:
-                bag[c] += 1
 
     return offer
 
