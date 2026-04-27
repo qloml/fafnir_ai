@@ -306,11 +306,11 @@ def main():
                     help="Score to win (lower = shorter episodes)")
     ap.add_argument("--max-turns", type=int, default=500,
                     help="Max turns per episode before truncation")
-    ap.add_argument("--n-envs", type=int, default=4,
+    ap.add_argument("--n-envs", type=int, default=8,
                     help="Number of parallel environments")
     ap.add_argument("--update-freq", type=int, default=20_000,
                     help="Steps between self-play opponent updates")
-    ap.add_argument("--save-freq", type=int, default=50_000,
+    ap.add_argument("--save-freq", type=int, default=100_000,
                     help="Steps between checkpoint saves")
     ap.add_argument("--save-dir", type=str, default="rl/output",
                     help="Directory for checkpoints and logs")
