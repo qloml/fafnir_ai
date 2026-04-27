@@ -23,7 +23,7 @@ OBS_DIM = 36
 
 # ---------- primitives ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _draw_one(bag):
     total = np.int32(0)
     for i in range(N_COLORS):
@@ -40,7 +40,7 @@ def _draw_one(bag):
     return np.int32(-1)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _draw_n(bag, n):
     drawn = np.zeros(N_COLORS, dtype=np.int32)
     for _ in range(n):
@@ -51,7 +51,7 @@ def _draw_n(bag, n):
     return drawn
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _setup_offer(bag):
     offer = np.zeros(N_COLORS, dtype=np.int32)
     # Draw 2 stones at a time; if all same color so far, keep drawing
@@ -82,12 +82,12 @@ def _setup_offer(bag):
     return offer
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _clamp(x):
     return max(np.int32(0), x)
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _random_bid(hand, offer):
     bid = np.zeros(N_COLORS, dtype=np.int32)
     n_biddable = np.int32(0)
@@ -114,7 +114,7 @@ def _random_bid(hand, offer):
 
 # ---------- scoring ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _rank_colors(hands):
     ranked_idx = np.zeros(5, dtype=np.int32)
     ranked_cnt = np.zeros(5, dtype=np.int32)
@@ -136,7 +136,7 @@ def _rank_colors(hands):
     return ranked_idx, ranked_cnt
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _hand_score(hands, player, first_c, second_c):
     score = hands[player, 0]  # gold
     for c in range(1, N_COLORS):
@@ -152,7 +152,7 @@ def _hand_score(hands, player, first_c, second_c):
     return score
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _compute_potential(hands, player):
     """Compute the expected round-end score for a player given current hands.
     This is used for potential-based reward shaping.
@@ -165,7 +165,7 @@ def _compute_potential(hands, player):
 
 # ---------- known hand tracking ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _update_known_hands(known, winner, loser, w_bid, offer, l_bid):
     """Update known-hand tracking arrays after an auction.
 
@@ -186,7 +186,7 @@ def _update_known_hands(known, winner, loser, w_bid, offer, l_bid):
             known[loser, c] = l_bid[c]
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _reset_known_hands(known):
     """Reset known hands at round start (all cards re-dealt from bag)."""
     for p in range(2):
@@ -196,7 +196,7 @@ def _reset_known_hands(known):
 
 # ---------- round end ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def _do_round_end(hands, bag, trash, offer, scores, state, known):
     ranked_idx, _ = _rank_colors(hands)
     first_c = ranked_idx[0]
@@ -237,7 +237,7 @@ def _do_round_end(hands, bag, trash, offer, scores, state, known):
 
 # ---------- obs / mask ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_win):
     """Build 36-dim observation vector for the given player.
 
@@ -312,7 +312,7 @@ def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_w
     return obs
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def build_mask(hands, offer, player):
     ms = N_COLORS * (MAX_BID + 1)
     mask = np.zeros(ms, dtype=np.int8)
@@ -329,7 +329,7 @@ def build_mask(hands, offer, player):
 
 # ---------- main step ----------
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def fast_reset(score_to_win):
     bag = INITIAL_BAG.copy()
     hands = np.zeros((2, N_COLORS), dtype=np.int32)
@@ -351,7 +351,7 @@ def fast_reset(score_to_win):
     return hands, bag, trash, offer, scores, state, known
 
 
-@njit(cache=True)
+@njit(cache=True, fastmath=True)
 def fast_step(hands, bag, trash, offer, scores, state, known,
               bid0, bid1, score_to_win, max_turns):
     """Returns (reward, terminated, truncated). Modifies arrays in-place."""

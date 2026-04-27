@@ -242,7 +242,7 @@ def train(args):
             "MlpPolicy",
             env,
             learning_rate=3e-4,
-            n_steps=2048,
+            n_steps=4096,
             batch_size=512,
             n_epochs=5,
             gamma=0.99,
@@ -275,7 +275,7 @@ def train(args):
     )
 
     winrate_cb = WinRateLogCallback(log_freq=5000)
-    liveview_cb = LiveViewCallback(display_freq=500)
+    # liveview_cb = LiveViewCallback(display_freq=500)
 
     # Train!
     print("\nStarting training...")
