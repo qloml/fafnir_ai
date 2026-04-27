@@ -283,7 +283,7 @@ def train(args):
 
     model.learn(
         total_timesteps=args.total_steps,
-        callback=[selfplay_cb, checkpoint_cb, winrate_cb, liveview_cb],
+        callback=[selfplay_cb, checkpoint_cb, winrate_cb],
         progress_bar=True,
     )
 
