@@ -33,6 +33,7 @@ model: Optional[MaskablePPO] = None
 
 _action_lock = asyncio.Lock()
 _ok_sent_key: Optional[str] = None
+_restart_sent = False
 
 AUTO_NEXT = True
 THINK_DELAY = 0.05
@@ -79,6 +80,7 @@ def _trash_to_counts(trash: Any) -> np.ndarray:
 # Known-hand tracking (updated each auction from server state)
 _known = np.zeros((2, N_COLORS), dtype=np.int32)  # confirmed stones per player
 _prev_round = -1  # track round changes to reset known hands
+_last_processed_auction = None
 
 
 def _rank_colors_from_hands(my_counts, opp_total_counts):
@@ -114,19 +116,26 @@ def _compute_potential_from_counts(hand_counts, opp_counts):
 
 def update_known_from_state(st: Dict[str, Any], player_idx: int):
     """Update known-hand tracking from server state (call each state_update)."""
-    global _known, _prev_round
+    global _known, _prev_round, _last_processed_auction
 
     current_round = st.get("round", 1)
     if current_round != _prev_round:
         # Round changed — reset known hands
         _known[:] = 0
         _prev_round = current_round
+        _last_processed_auction = None
 
     # Check last_result for new auction info
     lr = st.get("last_result") or {}
     winner = lr.get("winner")
     if winner is None:
         return
+
+    # Ensure we don't process the same auction multiple times
+    auction_id = f"{current_round}-{st.get('turn', 1)}"
+    if _last_processed_auction == auction_id:
+        return
+    _last_processed_auction = auction_id
 
     try:
         wi = int(winner)
@@ -153,7 +162,7 @@ def update_known_from_state(st: Dict[str, Any], player_idx: int):
         _known[li, c] = max(_known[li, c], int(l_bid[c]))
 
 
-def state_to_obs(st: Dict[str, Any], player_idx: int, score_to_win: int = 1000) -> np.ndarray:
+def state_to_obs(st: Dict[str, Any], player_idx: int, score_to_win: int = 40) -> np.ndarray:
     """Convert server state_update dict to 36-dim observation vector."""
     obs = np.zeros(36, dtype=np.float32)
     ps = st.get("players") or []
@@ -321,26 +330,53 @@ async def do_ok_next(st: Dict[str, Any]):
     print(f"[RL] OK/Next ({ph})")
 
 
+async def do_restart_game():
+    global _restart_sent, _known, _prev_round, _last_processed_auction, _ok_sent_key
+    if _restart_sent:
+        return
+    _restart_sent = True
+    # Reset tracking state for new game
+    _known[:] = 0
+    _prev_round = -1
+    _last_processed_auction = None
+    _ok_sent_key = None
+    print("[RL] Game ended — sending restart_game")
+    await asyncio.sleep(THINK_DELAY)
+    await _emit_safe("restart_game", {"room_id": cfg["room"]})
+
+
 async def brain_loop():
+    global _restart_sent
     while True:
-        st = last_state
-        if st and my_index is not None and my_index >= 0:
-            ph = phase_of(st)
+        try:
+            st = last_state
+            if st and my_index is not None and my_index >= 0:
+                ph = phase_of(st)
 
-            if ph == "BIDDING":
-                cb = current_bidder(st)
-                ps = st.get("players") or []
-                submitted = False
-                if my_index < len(ps):
-                    submitted = ps[my_index].get("bid_submitted", False)
-                if cb == my_index and not submitted:
-                    async with _action_lock:
-                        await do_submit_bid(st)
+                if ph == "BIDDING":
+                    _restart_sent = False
+                    cb = current_bidder(st)
+                    ps = st.get("players") or []
+                    submitted = False
+                    if my_index < len(ps):
+                        submitted = ps[my_index].get("bid_submitted", False)
+                    if cb == my_index and not submitted:
+                        async with _action_lock:
+                            await do_submit_bid(st)
 
-            elif ph in ("RESULT", "ROUND_END"):
-                if AUTO_NEXT:
+                elif ph in ("RESULT", "ROUND_END"):
+                    if AUTO_NEXT:
+                        async with _action_lock:
+                            await do_ok_next(st)
+
+                elif ph == "GAME_END":
                     async with _action_lock:
-                        await do_ok_next(st)
+                        await do_restart_game()
+
+        except Exception as e:
+            print(f"[RL] Error in brain_loop: {e}")
+            import traceback
+            traceback.print_exc()
 
         await asyncio.sleep(0.10)
 

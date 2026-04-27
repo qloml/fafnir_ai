@@ -18,7 +18,7 @@ TRASH_LIMIT = 6
 SEED_TRASH_AT_ROUND_START = 3
 
 POINT_CHIP = 1
-SCORE_TO_WIN = 40
+SCORE_TO_WIN = 1000
 
 
 # =========================
