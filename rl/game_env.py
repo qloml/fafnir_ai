@@ -474,10 +474,17 @@ class FafnirEnv(gymnasium.Env):
         winner = self._resolve_auction(bid0, bid1)
         self.last_winner = winner if winner is not None else -1
 
+        # Action Tax: slight penalty for each stone spent to discourage early/wasteful discarding
+        b0_sum = int(bid0.sum())
+        action_tax = b0_sum * -0.005
+
         # Reward calculation
         reward = 0.0
         score_delta = (self.scores[0] - scores_before[0]) - (self.scores[1] - scores_before[1])
         reward += score_delta * 0.02
+        
+        # Apply action tax
+        reward += action_tax
 
         # Potential-based reward shaping
         pot_after = self._compute_potential(0)

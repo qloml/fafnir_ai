@@ -403,8 +403,17 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
 
     state[S_LAST_W] = winner
 
+    # Action Tax: slight penalty for each stone spent to discourage early/wasteful discarding
+    b0_sum = np.int32(0)
+    for c in range(N_COLORS):
+        b0_sum += bid0[c]
+    action_tax = np.float32(b0_sum) * np.float32(-0.005)
+
     # Score-based reward
     reward = np.float32(scores[0] - s0_before - (scores[1] - s1_before)) * np.float32(0.02)
+    
+    # Apply action tax
+    reward += action_tax
 
     # Potential-based reward shaping: reward change in expected hand value
     pot_after = _compute_potential(hands, np.int32(0))
