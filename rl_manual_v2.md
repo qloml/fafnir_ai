@@ -99,7 +99,7 @@ python rl/train.py [オプション]
 
 使用例 : 
 ```bash
-py rl/train.py --total-steps 1000000 --device cuda --n-envs 8 --update-freq 50000 --save-freq 200000 --resume .\rl\output\fafnir_final.zip
+py rl/train.py --total-steps 1000000 --device cuda --n-envs 16 --resume .\rl\output\fafnir_final.zip
 ```
 
 ### 3.2. 評価 (`rl/evaluate.py`)
