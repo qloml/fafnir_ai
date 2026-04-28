@@ -78,8 +78,14 @@ function updateUI() {
 
     // Status Message
     let msg = "Waiting for players...";
+    const me = (myIndex !== null && myIndex >= 0 && myIndex < ps.length) ? ps[myIndex] : null;
+
     if (phase === "BIDDING") {
-        msg = (currentState.current_bidder === myIndex) ? "👉 YOUR TURN TO BID" : "Waiting for opponent's bid...";
+        if (me && !me.bid_submitted) {
+            msg = "👉 YOUR TURN TO BID";
+        } else {
+            msg = "Waiting for opponent's bid...";
+        }
     } else if (phase === "RESULT" || phase === "ROUND_END") {
         msg = "Press OK/Next to continue.";
     } else if (phase === "GAME_END") {
@@ -161,12 +167,12 @@ function updateUI() {
     btnNext.classList.add("hidden");
     btnRestart.classList.add("hidden");
 
-    if (phase === "BIDDING" && currentState.current_bidder === myIndex && !ps[myIndex].bid_submitted) {
+    if (phase === "BIDDING" && me && !me.bid_submitted) {
         btnSubmit.classList.remove("hidden");
         // Disable submit if selection is empty (unless offer has colors) - simplified logic: let server reject invalid bids
         btnSubmit.classList.remove("disabled");
-    } else if (phase === "RESULT" || phase === "ROUND_END") {
-        if (!ps[myIndex].ok_ready) {
+    } else if ((phase === "RESULT" || phase === "ROUND_END") && me) {
+        if (!me.ok_ready) {
             btnNext.classList.remove("hidden");
         }
     } else if (phase === "GAME_END") {

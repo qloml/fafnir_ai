@@ -102,6 +102,14 @@ python rl/train.py [オプション]
 py rl/train.py --total-steps 1000000 --device cuda --n-envs 16 --resume .\rl\output\fafnir_final.zip
 ```
 
+**ブラウザで学習状況を確認する (TensorBoard)**
+学習を実行している間（または実行後）に、別のターミナルを開いて以下のコマンドを実行すると、ブラウザ上で学習の進捗（勝率やエピソードの長さなど）をグラフで確認できます。
+```bash
+# 別のPowerShell（またはコマンドプロンプト）を開き、仮想環境に入ってから実行
+venv\Scripts\python.exe -m tensorboard.main --logdir rl/output/logs
+```
+実行後、ブラウザで `http://localhost:6006/` にアクセスしてください。
+
 ### 3.2. 評価 (`rl/evaluate.py`)
 学習済みモデルの強さを、3種類のテスト用ボット（Random, Greedy, Aggressive）と対戦させて計測します。
 ```bash
