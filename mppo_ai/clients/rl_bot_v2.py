@@ -1,11 +1,11 @@
-# clients/rl_bot.py
+# mppo_ai/clients/rl_bot.py
 """
 FAFNIR RL Bot — Socket.IO client using a trained MaskablePPO model.
 Same interface as ai_bot_sample.py but uses the RL model for decisions.
 
 Usage:
-    python clients/rl_bot.py --model rl/output/fafnir_final
-    python clients/rl_bot.py --model rl/output/fafnir_final --url http://SERVER:8765 --room room1 --name RLBot
+    python mppo_ai/clients/rl_bot.py --model mppo_ai/rl/output/fafnir_final
+    python mppo_ai/clients/rl_bot.py --model mppo_ai/rl/output/fafnir_final --url http://SERVER:8765 --room room1 --name RLBot
 """
 import asyncio
 import argparse

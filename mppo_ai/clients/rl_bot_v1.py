@@ -1,11 +1,11 @@
-# clients/rl_bot_v1.py
+# mppo_ai/clients/rl_bot_v1.py
 """
 FAFNIR RL Bot (v1 — 25-dim observation) — Socket.IO client using a trained MaskablePPO model.
 For use with models trained on the OLD 25-dimension observation space.
 
 Usage:
-    python clients/rl_bot_v1.py --model rl/output/completed/fafnir_final.zip
-    python clients/rl_bot_v1.py --model rl/output/completed/fafnir_final.zip --url http://SERVER:8765 --room room1 --name RLBot_v1
+    python mppo_ai/clients/rl_bot_v1.py --model mppo_ai/rl/output/completed/fafnir_final.zip
+    python mppo_ai/clients/rl_bot_v1.py --model mppo_ai/rl/output/completed/fafnir_final.zip --url http://SERVER:8765 --room room1 --name RLBot_v1
 """
 import asyncio
 import argparse

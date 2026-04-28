@@ -1,4 +1,4 @@
-# rl/fast_engine.py
+# mppo_ai/rl/fast_engine.py
 """
 Numba JIT-compiled FAFNIR game engine for fast RL training.
 All game logic as pure functions operating on numpy arrays.

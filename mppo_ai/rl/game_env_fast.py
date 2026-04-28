@@ -1,4 +1,4 @@
-# rl/game_env_fast.py
+# mppo_ai/rl/game_env_fast.py
 """
 Fast FAFNIR Gymnasium environment using Numba JIT-compiled engine.
 Drop-in replacement for game_env.FafnirEnv (for random opponent training).

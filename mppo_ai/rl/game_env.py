@@ -1,4 +1,4 @@
-# rl/game_env.py
+# mppo_ai/rl/game_env.py
 """
 FAFNIR ONLINE — Gymnasium environment for RL training.
 High-speed game simulator (no Socket.IO), replicating server.py logic exactly.

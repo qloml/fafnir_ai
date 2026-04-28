@@ -1,10 +1,10 @@
-# rl/evaluate.py
+# mppo_ai/rl/evaluate.py
 """
 Evaluate a trained FAFNIR RL agent against various opponents.
 
 Usage:
-    python rl/evaluate.py --model rl/output/fafnir_final
-    python rl/evaluate.py --model rl/output/fafnir_final --games 500 --score-to-win 1000
+    python mppo_ai/rl/evaluate.py --model mppo_ai/rl/output/fafnir_final
+    python mppo_ai/rl/evaluate.py --model mppo_ai/rl/output/fafnir_final --games 500 --score-to-win 1000
 """
 import os
 import sys

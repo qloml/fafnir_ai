@@ -1,11 +1,11 @@
-# rl/train.py
+# mppo_ai/rl/train.py
 """
 FAFNIR RL Training Script — Self-play with MaskablePPO.
 
 Usage:
-    python rl/train.py                          # default settings
-    python rl/train.py --total-steps 2000000    # longer training
-    python rl/train.py --score-to-win 50        # harder games
+    python mppo_ai/rl/train.py                          # default settings
+    python mppo_ai/rl/train.py --total-steps 2000000    # longer training
+    python mppo_ai/rl/train.py --score-to-win 50        # harder games
 """
 import os
 import sys
@@ -312,7 +312,7 @@ def main():
                     help="Steps between self-play opponent updates")
     ap.add_argument("--save-freq", type=int, default=100_000,
                     help="Steps between checkpoint saves")
-    ap.add_argument("--save-dir", type=str, default="rl/output",
+    ap.add_argument("--save-dir", type=str, default="mppo_ai/rl/output",
                     help="Directory for checkpoints and logs")
     ap.add_argument("--device", type=str, default="auto",
                     help="Device: auto, cpu, cuda")
