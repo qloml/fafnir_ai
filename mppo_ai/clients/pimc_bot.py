@@ -36,7 +36,7 @@ from sb3_contrib import MaskablePPO
 from mppo_ai.rl.game_env import (
     N_COLORS, MAX_BID_PER_COLOR, INITIAL_BAG, TRASH_LIMIT, COLORS_NAMES
 )
-from mppo_ai.rl.fast_engine import fast_step, build_obs, _random_bid
+from mppo_ai.rl.fast_engine import fast_step, build_obs, _random_bid, warmup as _warmup_jit
 
 sio = socketio.AsyncClient(reconnection=True)
 
@@ -54,6 +54,7 @@ AUTO_NEXT = True
 THINK_DELAY = 0.05
 SEARCH_TIME = 0.8   # seconds per bid decision
 N_CANDIDATES = 8    # stochastic samples from policy per determinization
+DET_BATCH_SIZE = 8  # determinizations to batch before one GPU value call
 
 # ── Known-hand tracking ────────────────────────────────────────────────────
 _known = np.zeros((2, N_COLORS), dtype=np.int32)
@@ -202,7 +203,7 @@ def _get_value_batch(obs_batch: np.ndarray) -> np.ndarray:
     Returns: shape (B,) float32
     """
     obs_tensor, _ = model.policy.obs_to_tensor(obs_batch)
-    with torch.no_grad():
+    with torch.inference_mode():
         values = model.policy.predict_values(obs_tensor)
     return values.cpu().numpy().flatten()
 
@@ -215,30 +216,32 @@ def _sample_candidate_bids(
     n_samples: int
 ) -> List[np.ndarray]:
     """
-    Sample candidate bids from the PPO policy.
+    Sample candidate bids from the PPO policy (batched single forward pass).
     One deterministic + (n_samples-1) stochastic.
     All returned bids are clamped to be legal.
-    Uses model.predict() which returns MultiDiscrete shape-(N_COLORS,).
     """
-    candidates: List[np.ndarray] = []
+    # Batch all samples through the policy network in one forward pass
+    obs_batch = np.tile(obs, (n_samples, 1))       # (n_samples, 36)
+    mask_batch = np.tile(mask, (n_samples, 1))      # (n_samples, 66)
+    obs_t, _ = model.policy.obs_to_tensor(obs_batch)
 
-    # Deterministic (greedy) bid
-    action, _ = model.predict(obs, action_masks=mask, deterministic=True)
-    candidates.append(clamp_bid(action.astype(np.int32), hand_counts, offer_counts))
+    with torch.inference_mode():
+        dist = model.policy.get_distribution(obs_t, action_masks=mask_batch)
+        det_action = dist.mode()[0:1]                # (1, N_COLORS)
+        stoch_actions = dist.sample()[1:]             # (n_samples-1, N_COLORS)
+        all_actions = torch.cat([det_action, stoch_actions], dim=0)
 
-    # Stochastic samples
-    for _ in range(n_samples - 1):
-        action, _ = model.predict(obs, action_masks=mask, deterministic=False)
-        candidates.append(clamp_bid(action.astype(np.int32), hand_counts, offer_counts))
+    all_np = all_actions.cpu().numpy().astype(np.int32)
 
-    # Deduplicate
+    # Deduplicate after clamping
     unique: List[np.ndarray] = []
     seen = set()
-    for b in candidates:
-        key = tuple(b.tolist())
+    for i in range(n_samples):
+        bid = clamp_bid(all_np[i], hand_counts, offer_counts)
+        key = tuple(bid.tolist())
         if key not in seen:
             seen.add(key)
-            unique.append(b)
+            unique.append(bid)
     return unique
 
 
@@ -305,103 +308,96 @@ def run_pimc_search(st: Dict[str, Any], player_idx: int, time_limit: float) -> n
 
     # ── Accumulate value estimates across determinizations ────────────────
     # action_sum[i] = total value accumulated for candidate i
-    action_sum    = np.zeros(len(candidates), dtype=np.float64)
-    action_visits = np.zeros(len(candidates), dtype=np.int32)
+    n_cand = len(candidates)
+    action_sum    = np.zeros(n_cand, dtype=np.float64)
+    action_visits = np.zeros(n_cand, dtype=np.int32)
 
     start_time = time.perf_counter()
     det_count  = 0
 
     while time.perf_counter() - start_time < time_limit:
-        det_count += 1
+        # ── Mini-batch: run DET_BATCH_SIZE determinizations, one GPU call ──
+        all_obs: List[np.ndarray] = []   # non-terminal obs to evaluate
+        all_cand_idx: List[int] = []     # which candidate each obs belongs to
+        all_term: List[tuple] = []       # (cand_idx, terminal_value)
 
-        # 1. Determinize opponent's hidden hand
-        if opp_unknown_count > 0 and len(unseen_arr) >= opp_unknown_count:
-            perm = np.random.permutation(len(unseen_arr))
-            chosen_idx = perm[:opp_unknown_count]
-            opp_hand = opp_known.copy()
-            for ci in chosen_idx:
-                opp_hand[unseen_arr[ci]] += 1
-            bag_indices = perm[opp_unknown_count:]
-        else:
-            opp_hand = opp_known.copy()
-            bag_indices = np.arange(len(unseen_arr))
+        for _ in range(DET_BATCH_SIZE):
+            if time.perf_counter() - start_time >= time_limit:
+                break
+            det_count += 1
 
-        bag = np.zeros(N_COLORS, dtype=np.int32)
-        for ci in bag_indices:
-            bag[unseen_arr[ci]] += 1
-
-        # Build simulated hands
-        sim_hands_base = np.zeros((2, N_COLORS), dtype=np.int32)
-        sim_hands_base[player_idx] = my_hand.copy()
-        sim_hands_base[other_idx]  = opp_hand.copy()
-
-        # 2. Collect post-step obs for all candidates in a batch
-        obs_list: List[np.ndarray] = []
-        term_values: List[Optional[float]] = []
-
-        for bid in candidates:
-            sim_hands  = sim_hands_base.copy()
-            sim_bag    = bag.copy()
-            sim_trash  = trash.copy()
-            sim_offer  = offer.copy()
-            sim_scores = scores.copy()
-            sim_state  = np.array([caretaker, round_n, turn_n, 0, -1], dtype=np.int32)
-            sim_known  = _known.copy()
-
-            # Opponent uses random policy during lookahead
-            opp_bid = _random_bid(sim_hands[other_idx], sim_offer)
-
-            bid0 = bid     if player_idx == 0 else opp_bid
-            bid1 = opp_bid if player_idx == 0 else bid
-
-            reward, term, _ = fast_step(
-                sim_hands, sim_bag, sim_trash, sim_offer,
-                sim_scores, sim_state, sim_known,
-                bid0, bid1, np.int32(40), np.int32(500)
-            )
-
-            if term:
-                # Terminal: +1 if I won, -1 if I lost
-                v = 1.0 if sim_scores[player_idx] >= 40 else -1.0
-                # fast_step reward is from player 0's perspective; flip for player 1
-                r = float(reward) if player_idx == 0 else -float(reward)
-                term_values.append(r + v)
-                obs_list.append(None)
+            # 1. Determinize opponent's hidden hand
+            if opp_unknown_count > 0 and len(unseen_arr) >= opp_unknown_count:
+                perm = np.random.permutation(len(unseen_arr))
+                opp_hand = opp_known.copy()
+                for ci in perm[:opp_unknown_count]:
+                    opp_hand[unseen_arr[ci]] += 1
+                bag_indices = perm[opp_unknown_count:]
             else:
-                post_obs = build_obs(
+                opp_hand = opp_known.copy()
+                bag_indices = np.arange(len(unseen_arr))
+
+            bag = np.zeros(N_COLORS, dtype=np.int32)
+            for ci in bag_indices:
+                bag[unseen_arr[ci]] += 1
+
+            sim_hands_base = np.zeros((2, N_COLORS), dtype=np.int32)
+            sim_hands_base[player_idx] = my_hand
+            sim_hands_base[other_idx]  = opp_hand
+
+            # 2. Simulate each candidate bid
+            for ci, bid in enumerate(candidates):
+                sim_hands  = sim_hands_base.copy()
+                sim_bag    = bag.copy()
+                sim_trash  = trash.copy()
+                sim_offer  = offer.copy()
+                sim_scores = scores.copy()
+                sim_state  = np.array([caretaker, round_n, turn_n, 0, -1], dtype=np.int32)
+                sim_known  = _known.copy()
+
+                opp_bid = _random_bid(sim_hands[other_idx], sim_offer)
+                bid0 = bid     if player_idx == 0 else opp_bid
+                bid1 = opp_bid if player_idx == 0 else bid
+
+                reward, term, _ = fast_step(
                     sim_hands, sim_bag, sim_trash, sim_offer,
                     sim_scores, sim_state, sim_known,
-                    np.int32(player_idx), np.int32(40)
+                    bid0, bid1, np.int32(40), np.int32(500)
                 )
-                obs_list.append(post_obs)
-                term_values.append(None)  # will fill from batch
 
-        # 3. Batch-evaluate non-terminal states
-        non_term_indices = [i for i, tv in enumerate(term_values) if tv is None]
-        if non_term_indices:
-            batch = np.stack([obs_list[i] for i in non_term_indices])
+                if term:
+                    v = 1.0 if sim_scores[player_idx] >= 40 else -1.0
+                    r = float(reward) if player_idx == 0 else -float(reward)
+                    all_term.append((ci, r + v))
+                else:
+                    post_obs = build_obs(
+                        sim_hands, sim_bag, sim_trash, sim_offer,
+                        sim_scores, sim_state, sim_known,
+                        np.int32(player_idx), np.int32(40)
+                    )
+                    all_obs.append(post_obs)
+                    all_cand_idx.append(ci)
+
+        # 3. Single GPU call for entire mini-batch of determinizations
+        if all_obs:
+            batch = np.stack(all_obs)
             values = _get_value_batch(batch)
-            for rank, i in enumerate(non_term_indices):
-                term_values[i] = float(values[rank])
+            for rank, ci in enumerate(all_cand_idx):
+                action_sum[ci] += float(values[rank])
+                action_visits[ci] += 1
 
-        # 4. Accumulate
-        for i, v in enumerate(term_values):
-            action_sum[i]    += v
-            action_visits[i] += 1
+        for ci, v in all_term:
+            action_sum[ci] += v
+            action_visits[ci] += 1
 
     # ── Pick best candidate ───────────────────────────────────────────────
-    best_idx = 0
-    best_avg = -1e9
-    for i in range(len(candidates)):
-        if action_visits[i] > 0:
-            avg = action_sum[i] / action_visits[i]
-            if avg > best_avg:
-                best_avg = avg
-                best_idx = i
-
+    avg_values = np.where(
+        action_visits > 0, action_sum / action_visits, -1e9
+    )
+    best_idx = int(np.argmax(avg_values))
     best_bid = candidates[best_idx]
     print(f"[PIMC] {det_count} determinizations | "
-          f"best bid={best_bid.tolist()} avg_value={best_avg:.3f}")
+          f"best bid={best_bid.tolist()} avg_value={avg_values[best_idx]:.3f}")
     return best_bid
 
 
@@ -575,7 +571,7 @@ async def bid_rejected(data):
 # ══════════════════════════════════════════════════════════════════════════
 
 async def main():
-    global model, SEARCH_TIME, THINK_DELAY, N_CANDIDATES
+    global model, SEARCH_TIME, THINK_DELAY, N_CANDIDATES, DET_BATCH_SIZE
 
     ap = argparse.ArgumentParser(description="FAFNIR PIMC Bot")
     ap.add_argument("--model",       type=str,   required=True)
@@ -586,17 +582,25 @@ async def main():
                     help="Seconds for PIMC search per bid (default 0.8)")
     ap.add_argument("--candidates",  type=int,   default=8,
                     help="Policy samples per determinization (default 8)")
+    ap.add_argument("--det-batch",   type=int,   default=8,
+                    help="Determinizations per GPU batch (default 8)")
     args = ap.parse_args()
 
     cfg["url"]  = args.url
     cfg["room"] = args.room
     cfg["name"] = args.name
-    SEARCH_TIME  = args.search_time
-    N_CANDIDATES = args.candidates
+    SEARCH_TIME    = args.search_time
+    N_CANDIDATES   = args.candidates
+    DET_BATCH_SIZE = args.det_batch
 
     print(f"[PIMC] Loading model: {args.model}")
     model = MaskablePPO.load(args.model)
-    print(f"[PIMC] Model loaded! search_time={SEARCH_TIME}s candidates={N_CANDIDATES}")
+    print(f"[PIMC] Model loaded! search_time={SEARCH_TIME}s "
+          f"candidates={N_CANDIDATES} det_batch={DET_BATCH_SIZE}")
+
+    print("[PIMC] Warming up Numba JIT...")
+    _warmup_jit()
+    print("[PIMC] JIT warmup done.")
 
     task_brain = None
     try:
