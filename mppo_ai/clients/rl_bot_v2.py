@@ -411,8 +411,22 @@ async def player_assigned(data):
 
 @sio.on("state_update")
 async def state_update(state):
-    global last_state, _ok_sent_key
+    global last_state, _ok_sent_key, my_index
     last_state = state
+
+    # Auto-correct my_index by finding our name in the players list.
+    # This handles the case where the opponent disconnects and reconnects,
+    # causing the server's sids list order (and thus player indices) to change
+    # without sending us a new player_assigned event.
+    ps = state.get("players") or []
+    my_name = cfg["name"]
+    for i, p in enumerate(ps):
+        if p.get("name") == my_name:
+            if my_index != i:
+                print(f"[RL] Index corrected: {my_index} -> {i}")
+                my_index = i
+            break
+
     # Update known-hand tracking
     if my_index is not None:
         update_known_from_state(state, my_index)

@@ -47,6 +47,16 @@ document.getElementById("btn-join").addEventListener("click", () => {
 
     socket.on("state_update", (state) => {
         currentState = state;
+        // Auto-correct myIndex: after opponent reconnects, server sids order
+        // may change without sending a new player_assigned event.
+        const ps = state.players || [];
+        for (let i = 0; i < ps.length; i++) {
+            if (ps[i].name === playerName && myIndex !== i) {
+                console.log(`[GUI] Index corrected: ${myIndex} -> ${i}`);
+                myIndex = i;
+                document.getElementById("my-name").textContent = playerName + " (P" + myIndex + ")";
+            }
+        }
         updateUI();
     });
 
