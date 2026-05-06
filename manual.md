@@ -147,23 +147,46 @@ python mppo_ai/clients/rl_bot.py --model mppo_ai/rl/output/fafnir_final.zip [オ
 | `--deterministic` | `1` | `1`なら最強の手を打ち、`0`なら少し確率的に揺らぎのある手を打ちます。 |
 | `--think-delay` | `0.05` | AIが手を打つまでの待機時間（秒）。 |
 
-#### ② `mppo_ai/clients/human_cli.py` (CUI人間用クライアント)
+#### ② `mppo_ai/clients/pimc_bot.py` (探索付き強化学習AIクライアント - PIMC)
+サーバーに学習済みAIを接続させるプログラムですが、単純なニューラルネットワークの出力だけでなく、実行時に**PIMC (Perfect Information Monte Carlo) 探索**を行ってより強力な手を打ちます。
+※ **注意:** このスクリプトはオンライン対戦クライアントとしてのみ機能し、モデル自体の「学習（重みの更新）」は一切行いません。学習は `train.py` の役割です。
+
+**【PIMC探索アルゴリズムの解説】**
+Fafnirは「相手の伏せ札」という不完全情報を持つゲームです。PIMCボットでは以下のように探索を行います。
+1. **決定化 (Determinization):** 「相手の確定手札」と「袋の残り石」の情報をもとに、相手の伏せ札のランダムな組み合わせパターンを複数生成し、一時的に「完全情報ゲーム」と仮定します。
+2. **候補手の抽出:** 学習済みPPOモデルを使って、現在の盤面から複数の「候補となる手（最も確率の高い手＋確率的な手）」をサンプリングします。
+3. **1手先読みと評価:** 高速シミュレータ (`fast_engine.py`) を使い、各候補手を打った1手先の盤面を作ります。その後、PPOの「価値ネットワーク (Value Network)」を使用してその盤面の有利さを数値化します。
+4. **最善手の選択:** 複数の決定化パターンすべてをシミュレーションし、平均して最も評価が高かった候補手を最終的な行動として送信します。
+
+```bash
+python mppo_ai/clients/pimc_bot.py --model mppo_ai/rl/output/fafnir_final.zip [オプション]
+```
+| 引数 | デフォルト | 説明 |
+| :--- | :--- | :--- |
+| `--model` | (必須) | 使用するモデルのパス。 |
+| `--url` | `http://127.0.0.1:8765` | 接続先のサーバーURL。 |
+| `--room` | `room1` | 入室するルーム名。 |
+| `--name` | `PIMC_Bot` | 画面に表示されるAIの名前。 |
+| `--search-time` | `0.8` | 1手あたりの探索に使う時間（秒）。 |
+| `--candidates` | `8` | 1つの決定化パターンにつきサンプリングする候補手の数。 |
+
+#### ③ `mppo_ai/clients/human_cli.py` (CUI人間用クライアント)
 ターミナル上で人間がプレイするためのクライアントです。
 ```bash
 python mppo_ai/clients/human_cli.py --name Player1 --room room1
 ```
 
-#### ③ `mppo_ai/clients/ai_bot_sample.py` (ルールベースAIクライアント)
+#### ④ `mppo_ai/clients/ai_bot_sample.py` (ルールベースAIクライアント)
 ランダムや簡単なルールで動くサンプルボットです。RLボットの対戦相手としてテスト起動するのに便利です。
 ```bash
 python mppo_ai/clients/ai_bot_sample.py --name DummyBot --room room1
 ```
 
-#### ④ `mppo_ai/clients/spectator_gui.py` (観戦用GUI)
+#### ⑤ `mppo_ai/clients/spectator_gui.py` (観戦用GUI)
 Pygameを使用したデスクトップ用の観戦画面です。対戦には参加せず、現在の盤面や両者の手札（公開情報のみ）をグラフィカルに表示します。
 ```bash
 python mppo_ai/clients/spectator_gui.py --room room1
 ```
 
-#### ⑤ `mppo_ai/clients/web_gui/` (ブラウザ用UI)
+#### ⑥ `mppo_ai/clients/web_gui/` (ブラウザ用UI)
 ブラウザ上で人間がプレイするためのWebフロントエンド一式（HTML/CSS/JS）です。`index.html` をブラウザで開くことで、サーバーに接続してGUIでプレイできます。
