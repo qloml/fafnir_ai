@@ -17,11 +17,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import socketio
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from sb3_contrib import MaskablePPO
-from rl.game_env import N_COLORS, MAX_BID_PER_COLOR, INITIAL_BAG, TRASH_LIMIT, COLORS_NAMES
+from mppo_ai.rl.game_env import N_COLORS, MAX_BID_PER_COLOR, INITIAL_BAG, TRASH_LIMIT, COLORS_NAMES
 
 sio = socketio.AsyncClient(reconnection=True)
 

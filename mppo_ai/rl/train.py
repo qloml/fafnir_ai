@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from sb3_contrib import MaskablePPO
@@ -24,11 +24,11 @@ from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-from rl.game_env import (
+from mppo_ai.rl.game_env import (
     OpponentManager, ModelOpponent, RandomOpponent,
     N_COLORS, MAX_BID_PER_COLOR,
 )
-from rl.game_env_fast import FafnirFastEnv
+from mppo_ai.rl.game_env_fast import FafnirFastEnv
 
 
 # ==========================================

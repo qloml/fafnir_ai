@@ -9,11 +9,11 @@ import numpy as np
 import gymnasium
 from gymnasium import spaces
 
-from rl.fast_engine import (
+from mppo_ai.rl.fast_engine import (
     fast_reset, fast_step, build_obs, build_mask, warmup, _random_bid,
     N_COLORS, MAX_BID, OBS_DIM,
 )
-from rl.game_env import OpponentManager, ModelOpponent
+from mppo_ai.rl.game_env import OpponentManager, ModelOpponent
 
 # Warm up JIT on import
 warmup()

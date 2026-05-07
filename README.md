@@ -197,9 +197,9 @@ python mppo_ai/clients/pimc_bot.py --model mppo_ai/rl/output/fafnir_final.zip [o
 | `--url` | `http://127.0.0.1:8765` | Server URL. |
 | `--room` | `room1` | Room to join. |
 | `--name` | `PIMC_Bot` | Display name. |
-| `--search-time` | `0.8` | Seconds allocated for PIMC search per bid. |
-| `--candidates` | `8` | Number of candidate bids sampled from the policy per determinization. |
-| `--det-batch` | `8` | Number of determinizations batched per GPU value-network call. Higher = better GPU throughput, but coarser time-limit granularity. |
+| `--search-time` | `0.2` | Seconds allocated for PIMC search per bid. |
+| `--candidates` | `4` | Number of candidate bids sampled from the policy per determinization. |
+| `--det-batch` | `4` | Number of determinizations batched per GPU value-network call. Higher = better GPU throughput, but coarser time-limit granularity. |
 
 #### Other Clients
 

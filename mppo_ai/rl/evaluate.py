@@ -13,13 +13,13 @@ from pathlib import Path
 
 import numpy as np
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 
-from rl.game_env import (
+from mppo_ai.rl.game_env import (
     FafnirEnv, RandomOpponent, ModelOpponent,
     N_COLORS, MAX_BID_PER_COLOR,
 )

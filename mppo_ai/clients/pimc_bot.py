@@ -36,7 +36,7 @@ from sb3_contrib import MaskablePPO
 from mppo_ai.rl.game_env import (
     N_COLORS, MAX_BID_PER_COLOR, INITIAL_BAG, TRASH_LIMIT, COLORS_NAMES
 )
-from mppo_ai.rl.fast_engine import fast_step, build_obs, _random_bid, warmup as _warmup_jit
+from mppo_ai.rl.fast_engine import fast_step, build_obs, build_mask, _random_bid, warmup as _warmup_jit
 
 sio = socketio.AsyncClient(reconnection=True)
 
@@ -52,9 +52,9 @@ _restart_sent = False
 
 AUTO_NEXT = True
 THINK_DELAY = 0.05
-SEARCH_TIME = 0.8   # seconds per bid decision
-N_CANDIDATES = 8    # stochastic samples from policy per determinization
-DET_BATCH_SIZE = 8  # determinizations to batch before one GPU value call
+SEARCH_TIME = 0.2   # seconds per bid decision
+N_CANDIDATES = 4    # stochastic samples from policy per determinization
+DET_BATCH_SIZE = 4  # determinizations to batch before one GPU value call
 
 # ── Known-hand tracking ────────────────────────────────────────────────────
 _known = np.zeros((2, N_COLORS), dtype=np.int32)
@@ -216,32 +216,30 @@ def _sample_candidate_bids(
     n_samples: int
 ) -> List[np.ndarray]:
     """
-    Sample candidate bids from the PPO policy (batched single forward pass).
+    Sample candidate bids from the PPO policy.
     One deterministic + (n_samples-1) stochastic.
     All returned bids are clamped to be legal.
+    Uses model.predict() which returns MultiDiscrete shape-(N_COLORS,).
     """
-    # Batch all samples through the policy network in one forward pass
-    obs_batch = np.tile(obs, (n_samples, 1))       # (n_samples, 36)
-    mask_batch = np.tile(mask, (n_samples, 1))      # (n_samples, 66)
-    obs_t, _ = model.policy.obs_to_tensor(obs_batch)
+    candidates: List[np.ndarray] = []
 
-    with torch.inference_mode():
-        dist = model.policy.get_distribution(obs_t, action_masks=mask_batch)
-        det_action = dist.mode()[0:1]                # (1, N_COLORS)
-        stoch_actions = dist.sample()[1:]             # (n_samples-1, N_COLORS)
-        all_actions = torch.cat([det_action, stoch_actions], dim=0)
+    # Deterministic (greedy) bid
+    action, _ = model.predict(obs, action_masks=mask, deterministic=True)
+    candidates.append(clamp_bid(action.astype(np.int32), hand_counts, offer_counts))
 
-    all_np = all_actions.cpu().numpy().astype(np.int32)
+    # Stochastic samples
+    for _ in range(n_samples - 1):
+        action, _ = model.predict(obs, action_masks=mask, deterministic=False)
+        candidates.append(clamp_bid(action.astype(np.int32), hand_counts, offer_counts))
 
-    # Deduplicate after clamping
+    # Deduplicate
     unique: List[np.ndarray] = []
     seen = set()
-    for i in range(n_samples):
-        bid = clamp_bid(all_np[i], hand_counts, offer_counts)
-        key = tuple(bid.tolist())
+    for b in candidates:
+        key = tuple(b.tolist())
         if key not in seen:
             seen.add(key)
-            unique.append(bid)
+            unique.append(b)
     return unique
 
 
@@ -345,7 +343,18 @@ def run_pimc_search(st: Dict[str, Any], player_idx: int, time_limit: float) -> n
             sim_hands_base[player_idx] = my_hand
             sim_hands_base[other_idx]  = opp_hand
 
-            # 2. Simulate each candidate bid
+            # 2. Predict opponent bid using PPO model (not random)
+            opp_sim_state = np.array([caretaker, round_n, turn_n, 0, -1], dtype=np.int32)
+            opp_obs = build_obs(
+                sim_hands_base, bag, trash, offer, scores,
+                opp_sim_state, _known.copy(),
+                np.int32(other_idx), np.int32(40)
+            )
+            opp_mask = build_mask(sim_hands_base, offer, np.int32(other_idx))
+            opp_action, _ = model.predict(opp_obs, action_masks=opp_mask, deterministic=False)
+            opp_bid = clamp_bid(opp_action.astype(np.int32), sim_hands_base[other_idx], offer)
+
+            # 3. Simulate each candidate bid against the SAME opponent bid
             for ci, bid in enumerate(candidates):
                 sim_hands  = sim_hands_base.copy()
                 sim_bag    = bag.copy()
@@ -355,7 +364,6 @@ def run_pimc_search(st: Dict[str, Any], player_idx: int, time_limit: float) -> n
                 sim_state  = np.array([caretaker, round_n, turn_n, 0, -1], dtype=np.int32)
                 sim_known  = _known.copy()
 
-                opp_bid = _random_bid(sim_hands[other_idx], sim_offer)
                 bid0 = bid     if player_idx == 0 else opp_bid
                 bid1 = opp_bid if player_idx == 0 else bid
 
@@ -375,15 +383,17 @@ def run_pimc_search(st: Dict[str, Any], player_idx: int, time_limit: float) -> n
                         sim_scores, sim_state, sim_known,
                         np.int32(player_idx), np.int32(40)
                     )
+                    # Store step reward alongside obs for R + V(s') evaluation
+                    r = float(reward) if player_idx == 0 else -float(reward)
                     all_obs.append(post_obs)
-                    all_cand_idx.append(ci)
+                    all_cand_idx.append((ci, r))
 
         # 3. Single GPU call for entire mini-batch of determinizations
         if all_obs:
             batch = np.stack(all_obs)
             values = _get_value_batch(batch)
-            for rank, ci in enumerate(all_cand_idx):
-                action_sum[ci] += float(values[rank])
+            for rank, (ci, r) in enumerate(all_cand_idx):
+                action_sum[ci] += r + float(values[rank])
                 action_visits[ci] += 1
 
         for ci, v in all_term:
@@ -578,12 +588,12 @@ async def main():
     ap.add_argument("--url",         type=str,   default="http://127.0.0.1:8765")
     ap.add_argument("--room",        type=str,   default="room1")
     ap.add_argument("--name",        type=str,   default="PIMC_Bot")
-    ap.add_argument("--search-time", type=float, default=0.8,
-                    help="Seconds for PIMC search per bid (default 0.8)")
-    ap.add_argument("--candidates",  type=int,   default=8,
-                    help="Policy samples per determinization (default 8)")
-    ap.add_argument("--det-batch",   type=int,   default=8,
-                    help="Determinizations per GPU batch (default 8)")
+    ap.add_argument("--search-time", type=float, default=0.2,
+                    help="Seconds for PIMC search per bid (default 0.2)")
+    ap.add_argument("--candidates",  type=int,   default=4,
+                    help="Policy samples per determinization (default 4)")
+    ap.add_argument("--det-batch",   type=int,   default=4,
+                    help="Determinizations per GPU batch (default 4)")
     args = ap.parse_args()
 
     cfg["url"]  = args.url
