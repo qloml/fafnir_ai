@@ -71,9 +71,10 @@ pip install -r requirements.txt
 
 ## AI Specification
 
-### Observation Space (36 dimensions)
+### Observation Space (34 dimensions / legacy 36 dimensions)
 
 All values are normalized to the range `[0.0, 1.0]`.
+*Note: The latest architecture (v3) omits absolute scores to train on isolated rounds (34-dim). The legacy architecture (v2) includes scores (36-dim).*
 
 | Index | Feature | Description |
 |---|---|---|
@@ -83,11 +84,11 @@ All values are normalized to the range `[0.0, 1.0]`.
 | 18–23 | **Opponent's confirmed hand** (6 colors) | Minimum stones the opponent is known to hold, inferred from auction history. |
 | 24 | **Opponent's unknown count** | Number of opponent stones whose color is unknown (total hand − confirmed). Normalized by 15. |
 | 25–30 | **My confirmed hand** (6 colors) | What the opponent can deduce about my hand from past auctions. |
-| 31 | **My score** | Normalized by score-to-win. |
-| 32 | **Opponent's score** | Normalized by score-to-win. |
-| 33 | **Bag remaining** | Total stones left in the bag, normalized by initial bag total. |
-| 34 | **Am I the caretaker?** | `1.0` if I am the current caretaker, `0.0` otherwise. |
-| 35 | **Hand potential score** | Expected round-end score if the round ended now. Normalized from range [−15, +60]. |
+| 31 | **Bag remaining** | Total stones left in the bag, normalized by initial bag total. |
+| 32 | **Am I the caretaker?** | `1.0` if I am the current caretaker, `0.0` otherwise. |
+| 33 | **Hand potential score** | Expected round-end score if the round ended now. Normalized from range [−15, +60]. |
+
+*(In the legacy 36-dim model, Index 31 is My Score, and Index 32 is Opponent's Score).*
 
 ### Action Space
 
@@ -99,7 +100,7 @@ The reward signal is composed of four terms:
 
 | Component | Formula | Purpose |
 |---|---|---|
-| **Win/Loss** | Win: `+1.0`, Loss: `−1.0` | Ultimate objective. |
+| **Round Score** | `(round_score_diff) / 30.0` | Ultimate objective. A game episode is exactly one round. |
 | **Score delta** | `(my_score_change − opp_score_change) × 0.02` | Per-turn progress signal. |
 | **Potential shaping** | `(potential_after − potential_before) × 0.005` | Rewards improving hand composition (acquiring valuable stones, discarding bad ones). |
 | **Action tax** | `stones_bid × −0.005` | Discourages wasteful early discarding with no strategic benefit. |
@@ -166,12 +167,13 @@ uvicorn server_0424:socket_app --host 0.0.0.0 --port 8765
 
 All clients connect to a running game server.
 
-#### RL Bot (`mppo_ai/clients/rl_bot.py`)
+#### RL Bot (`mppo_ai/clients/rl_bot_v2.py` / `rl_bot_v3.py`)
 
 Connects the trained neural network directly — fast, no search overhead.
+*(Use `v2` for legacy 36-dim models, `v3` for current 34-dim round-based models).*
 
 ```bash
-python mppo_ai/clients/rl_bot.py --model mppo_ai/rl/output/fafnir_final.zip [options]
+python mppo_ai/clients/rl_bot_v3.py --model mppo_ai/rl/output/fafnir_final.zip [options]
 ```
 
 | Argument | Default | Description |
@@ -183,12 +185,13 @@ python mppo_ai/clients/rl_bot.py --model mppo_ai/rl/output/fafnir_final.zip [opt
 | `--deterministic` | `1` | `1` = greedy (strongest), `0` = stochastic (slight randomness). |
 | `--think-delay` | `0.05` | Delay before submitting a bid (seconds). |
 
-#### PIMC Bot (`mppo_ai/clients/pimc_bot.py`)
+#### PIMC Bot (`mppo_ai/clients/pimc_bot_v2.py` / `pimc_bot_v3.py`)
 
 Enhanced client that wraps the trained model with **PIMC lookahead search** for stronger play. This is an **inference-only** client — it does not train or update the model. See [PIMC Search Algorithm](#pimc-search-algorithm) below.
+*(Use `v2` for legacy 36-dim models, `v3` for current 34-dim round-based models).*
 
 ```bash
-python mppo_ai/clients/pimc_bot.py --model mppo_ai/rl/output/fafnir_final.zip [options]
+python mppo_ai/clients/pimc_bot_v3.py --model mppo_ai/rl/output/fafnir_final.zip [options]
 ```
 
 | Argument | Default | Description |

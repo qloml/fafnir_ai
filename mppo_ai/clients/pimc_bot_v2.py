@@ -188,12 +188,17 @@ def _build_state_obs(
     hands, bag, trash, offer, scores, known,
     caretaker, round_n, turn_n, player_idx
 ) -> np.ndarray:
-    """Build a 36-dim obs for fast_engine.build_obs."""
+    """Build a 36-dim obs (fast_engine now outputs 34-dim, we pad back to 36)."""
     state = np.array([caretaker, round_n, turn_n, 0, -1], dtype=np.int32)
-    return build_obs(
+    obs_34 = build_obs(
         hands, bag, trash, offer, scores, state, known,
         np.int32(player_idx), np.int32(40)
     )
+    # Re-insert the scores at indices 31 and 32 to maintain 36-dim compatibility
+    score_p = np.float32(scores[player_idx]) / np.float32(40)
+    score_o = np.float32(scores[1 - player_idx]) / np.float32(40)
+    obs_36 = np.insert(obs_34, 31, [score_p, score_o])
+    return obs_36
 
 
 def _get_value_batch(obs_batch: np.ndarray) -> np.ndarray:

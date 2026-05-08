@@ -207,7 +207,7 @@ class FafnirEnv(gymnasium.Env):
 
         # Spaces
         self.observation_space = spaces.Box(
-            low=0.0, high=1.0, shape=(36,), dtype=np.float32
+            low=0.0, high=1.0, shape=(34,), dtype=np.float32
         )
         self.action_space = spaces.MultiDiscrete(
             [MAX_BID_PER_COLOR + 1] * N_COLORS
@@ -263,9 +263,10 @@ class FafnirEnv(gymnasium.Env):
         return float(compute_hand_score(self.hands, player, ranked))
 
     def _get_obs(self, player: int) -> np.ndarray:
-        """Build 36-dim observation from player's perspective."""
+        """Build 34-dim observation from player's perspective.
+        Scores excluded — each round is an independent episode."""
         other = 1 - player
-        obs = np.zeros(36, dtype=np.float32)
+        obs = np.zeros(34, dtype=np.float32)
 
         # 0-5: my hand counts (normalized by max possible)
         for c in range(N_COLORS):
@@ -293,21 +294,15 @@ class FafnirEnv(gymnasium.Env):
         for c in range(N_COLORS):
             obs[25 + c] = self.known[player, c] / max(1, INITIAL_BAG[c])
 
-        # 31: my score
-        obs[31] = self.scores[player] / float(max(1, self.score_to_win))
+        # 31: bag remaining
+        obs[31] = int(self.bag.sum()) / float(max(1, INITIAL_BAG.sum()))
 
-        # 32: opponent score
-        obs[32] = self.scores[other] / float(max(1, self.score_to_win))
+        # 32: am I caretaker
+        obs[32] = 1.0 if self.caretaker == player else 0.0
 
-        # 33: bag remaining
-        obs[33] = int(self.bag.sum()) / float(max(1, INITIAL_BAG.sum()))
-
-        # 34: am I caretaker
-        obs[34] = 1.0 if self.caretaker == player else 0.0
-
-        # 35: my hand's current potential score
+        # 33: my hand's current potential score
         potential = self._compute_potential(player)
-        obs[35] = (potential + 15.0) / 75.0
+        obs[33] = (potential + 15.0) / 75.0
 
         return np.clip(obs, 0.0, 1.0)
 
@@ -493,25 +488,14 @@ class FafnirEnv(gymnasium.Env):
         terminated = False
         truncated = False
 
-        # Check game end (before round end processing)
-        game_winner = self._check_game_end()
-        if game_winner is not None:
-            reward += 1.0 if game_winner == 0 else -1.0
-            terminated = True
-            return self._get_obs(0), reward, terminated, truncated, self._get_info()
-
-        # Check round end conditions
+        # Check round end conditions (= episode termination)
         if self._check_trash_limit() or self._check_bag_low():
             adds = self._do_round_end()
-            round_reward = (adds[0] - adds[1]) * 0.02
-            reward += round_reward
-
-            # Check game end after round scoring
-            game_winner = self._check_game_end()
-            if game_winner is not None:
-                reward += 1.0 if game_winner == 0 else -1.0
-                terminated = True
-                return self._get_obs(0), reward, terminated, truncated, self._get_info()
+            # Terminal reward = normalized round score differential
+            round_diff = (adds[0] - adds[1]) / 30.0
+            reward += round_diff
+            terminated = True
+            return self._get_obs(0), reward, terminated, truncated, self._get_info()
         else:
             # Setup next offer
             self.offer = setup_offer(self.bag, self._rng)
@@ -520,11 +504,6 @@ class FafnirEnv(gymnasium.Env):
         # Truncation check
         if self.total_turns >= self.max_turns:
             truncated = True
-            # Tie-break by score
-            if self.scores[0] > self.scores[1]:
-                reward += 0.5
-            elif self.scores[0] < self.scores[1]:
-                reward -= 0.5
 
         return self._get_obs(0), reward, terminated, truncated, self._get_info()
 

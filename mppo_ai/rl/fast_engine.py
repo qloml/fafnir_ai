@@ -3,7 +3,8 @@
 Numba JIT-compiled FAFNIR game engine for fast RL training.
 All game logic as pure functions operating on numpy arrays.
 
-Observation space: 36 dimensions (see build_obs for details).
+Observation space: 34 dimensions (see build_obs for details).
+Episode = single round (terminates at round-end scoring).
 """
 import numpy as np
 from numba import njit
@@ -19,7 +20,7 @@ STATE_SIZE = 5
 INITIAL_BAG = np.array([20, 12, 12, 12, 12, 12], dtype=np.int32)
 BAG_TOTAL = 80
 
-OBS_DIM = 36
+OBS_DIM = 34
 
 # ---------- primitives ----------
 
@@ -239,7 +240,7 @@ def _do_round_end(hands, bag, trash, offer, scores, state, known):
 
 @njit(cache=True, fastmath=True)
 def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_win):
-    """Build 36-dim observation vector for the given player.
+    """Build 34-dim observation vector for the given player.
 
     Layout:
       0- 5: My hand (6) — normalized by max possible per color
@@ -248,11 +249,13 @@ def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_w
      18-23: Opponent's confirmed hand (6) — normalized by max possible
      24   : Opponent's unknown stone count (1) — normalized by 15
      25-30: My confirmed hand (what opponent knows about me) (6) — normalized
-     31   : My score — normalized by score_to_win
-     32   : Opponent's score — normalized by score_to_win
-     33   : Bag remaining — normalized by BAG_TOTAL
-     34   : Am I the caretaker? (0 or 1)
-     35   : My hand's current potential score — normalized
+     31   : Bag remaining — normalized by BAG_TOTAL
+     32   : Am I the caretaker? (0 or 1)
+     33   : My hand's current potential score — normalized
+
+    Note: Scores are intentionally excluded because each round is
+    an independent episode. The optimal bid strategy within a round
+    does not depend on cumulative score.
     """
     other = np.int32(1 - player)
     obs = np.zeros(OBS_DIM, dtype=np.float32)
@@ -286,25 +289,19 @@ def build_obs(hands, bag, trash, offer, scores, state, known, player, score_to_w
     for c in range(N_COLORS):
         obs[25 + c] = np.float32(known[player, c]) / max(np.float32(1), np.float32(INITIAL_BAG[c]))
 
-    # 31: My score
-    obs[31] = np.float32(scores[player]) / max(np.float32(1), np.float32(score_to_win))
-
-    # 32: Opponent's score
-    obs[32] = np.float32(scores[other]) / max(np.float32(1), np.float32(score_to_win))
-
-    # 33: Bag remaining
+    # 31: Bag remaining
     bl = np.int32(0)
     for c in range(N_COLORS):
         bl += bag[c]
-    obs[33] = np.float32(bl) / np.float32(BAG_TOTAL)
+    obs[31] = np.float32(bl) / np.float32(BAG_TOTAL)
 
-    # 34: Am I the caretaker?
-    obs[34] = np.float32(1) if state[S_CT] == player else np.float32(0)
+    # 32: Am I the caretaker?
+    obs[32] = np.float32(1) if state[S_CT] == player else np.float32(0)
 
-    # 35: My hand's current potential score (normalized)
+    # 33: My hand's current potential score (normalized)
     potential = _compute_potential(hands, player)
     # Normalize: theoretical range is roughly -15 to +60, use 30 as midpoint scale
-    obs[35] = np.float32(potential + 15) / np.float32(75)
+    obs[33] = np.float32(potential + 15) / np.float32(75)
 
     # Clamp all to [0, 1]
     for i in range(OBS_DIM):
@@ -354,7 +351,12 @@ def fast_reset(score_to_win):
 @njit(cache=True, fastmath=True)
 def fast_step(hands, bag, trash, offer, scores, state, known,
               bid0, bid1, score_to_win, max_turns):
-    """Returns (reward, terminated, truncated). Modifies arrays in-place."""
+    """One auction step.  Episode = single round.
+
+    Returns (reward, terminated, truncated).  Modifies arrays in-place.
+    terminated=True when a round ends (trash/bag triggers scoring).
+    The terminal reward is the round-end score differential.
+    """
     state[S_TOTAL] += np.int32(1)
     ct = state[S_CT]
 
@@ -409,9 +411,9 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
         b0_sum += bid0[c]
     action_tax = np.float32(b0_sum) * np.float32(-0.005)
 
-    # Score-based reward
+    # Score-based reward (auction point chips)
     reward = np.float32(scores[0] - s0_before - (scores[1] - s1_before)) * np.float32(0.02)
-    
+
     # Apply action tax
     reward += action_tax
 
@@ -419,13 +421,7 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
     pot_after = _compute_potential(hands, np.int32(0))
     reward += np.float32(pot_after - pot_before) * np.float32(0.005)
 
-    # Game end check
-    if scores[0] >= score_to_win:
-        return reward + np.float32(1.0), True, False
-    if scores[1] >= score_to_win:
-        return reward - np.float32(1.0), True, False
-
-    # Trash / bag check
+    # ── Round-end check (= episode termination) ──────────────────────────
     trash_hit = False
     for c in range(N_COLORS):
         if trash[c] >= TRASH_LIMIT:
@@ -436,25 +432,28 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
     bag_low = bl < 2
 
     if trash_hit or bag_low:
-        rr = _do_round_end(hands, bag, trash, offer, scores, state, known)
-        reward += rr
-        if scores[0] >= score_to_win:
-            return reward + np.float32(1.0), True, False
-        if scores[1] >= score_to_win:
-            return reward - np.float32(1.0), True, False
+        # Round ends — compute scoring and terminate episode
+        ranked_idx, _ = _rank_colors(hands)
+        first_c = ranked_idx[0]
+        second_c = ranked_idx[1]
+        add0 = _hand_score(hands, 0, first_c, second_c)
+        add1 = _hand_score(hands, 1, first_c, second_c)
+        scores[0] = _clamp(scores[0] + add0)
+        scores[1] = _clamp(scores[1] + add1)
+
+        # Terminal reward = normalized round score differential
+        # Scale: round scores typically range -15 to +30, so divide by 30
+        round_diff = np.float32(add0 - add1) / np.float32(30)
+        return reward + round_diff, True, False
     else:
         new_offer = _setup_offer(bag)
         for c2 in range(N_COLORS):
             offer[c2] = new_offer[c2]
         state[S_TURN] += np.int32(1)
 
+    # Truncation safety (should rarely trigger for single rounds)
     if state[S_TOTAL] >= max_turns:
-        trunc_r = np.float32(0)
-        if scores[0] > scores[1]:
-            trunc_r = np.float32(0.5)
-        elif scores[0] < scores[1]:
-            trunc_r = np.float32(-0.5)
-        return reward + trunc_r, False, True
+        return reward, False, True
 
     return reward, False, False
 
