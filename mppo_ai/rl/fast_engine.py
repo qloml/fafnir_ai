@@ -405,11 +405,12 @@ def fast_step(hands, bag, trash, offer, scores, state, known,
 
     state[S_LAST_W] = winner
 
-    # Action Tax: slight penalty for each stone spent to discourage early/wasteful discarding
+    # Action Tax (Quadratic): heavily penalize large bids (4+ stones)
+    # 1 stone = -0.002, 2 = -0.008, 3 = -0.018, 4 = -0.032, 5 = -0.050
     b0_sum = np.int32(0)
     for c in range(N_COLORS):
         b0_sum += bid0[c]
-    action_tax = np.float32(b0_sum) * np.float32(-0.005)
+    action_tax = np.float32(b0_sum * b0_sum) * np.float32(-0.002)
 
     # Score-based reward (auction point chips)
     reward = np.float32(scores[0] - s0_before - (scores[1] - s1_before)) * np.float32(0.02)

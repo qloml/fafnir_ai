@@ -103,7 +103,7 @@ The reward signal is composed of four terms:
 | **Round Score** | `(round_score_diff) / 30.0` | Ultimate objective. A game episode is exactly one round. |
 | **Score delta** | `(my_score_change − opp_score_change) × 0.02` | Per-turn progress signal. |
 | **Potential shaping** | `(potential_after − potential_before) × 0.005` | Rewards improving hand composition (acquiring valuable stones, discarding bad ones). |
-| **Action tax** | `stones_bid × −0.005` | Discourages wasteful early discarding with no strategic benefit. |
+| **Action tax** | `(stones_bid^2) × −0.002` | Quadratic penalty. 1-2 stones is cheap, 4+ stones is heavily penalized to discourage wasteful discarding. |
 
 ---
 

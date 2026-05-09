@@ -125,9 +125,9 @@ class WinRateLogCallback(BaseCallback):
             if "episode" in info:
                 self._episodes += 1
                 r = info["episode"]["r"]
-                if r > 0.3:
+                if r > 0.05:
                     self._wins += 1
-                elif r < -0.3:
+                elif r < -0.05:
                     self._losses += 1
                 else:
                     self._draws += 1
@@ -162,9 +162,9 @@ class LiveViewCallback(BaseCallback):
             if "episode" in info:
                 self.recent_episodes += 1
                 r = info["episode"]["r"]
-                if r > 0.3:
+                if r > 0.05:
                     self.recent_wins += 1
-                elif r < -0.3:
+                elif r < -0.05:
                     self.recent_losses += 1
 
         if self.n_calls % self.display_freq == 0:
@@ -242,10 +242,10 @@ def train(args):
             "MlpPolicy",
             env,
             learning_rate=3e-4,
-            n_steps=4096,
-            batch_size=512,
+            n_steps=2048,
+            batch_size=256,
             n_epochs=5,
-            gamma=0.99,
+            gamma=0.97,
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=0.01,
