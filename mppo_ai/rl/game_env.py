@@ -431,11 +431,6 @@ class FafnirEnv(gymnasium.Env):
 
         return adds
 
-    def _check_game_end(self) -> Optional[int]:
-        for p in range(2):
-            if self.scores[p] >= self.score_to_win:
-                return p
-        return None
 
     def step(self, action):
         """One step = one auction turn.
