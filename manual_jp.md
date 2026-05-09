@@ -92,8 +92,8 @@ python mppo_ai/rl/train.py [オプション]
 | `--score-to-win` | `40` | 勝利に必要なスコア。 |
 | `--max-turns` | `500` | 1ゲームの最大ターン数（引き分け打ち切り用）。 |
 | `--n-envs` | `8` | 並列実行する環境数。CPUコア数に合わせると高速になります。 |
-| `--update-freq` | `20000` | 自己対戦の相手（過去の自分）を更新する頻度。 |
-| `--save-freq` | `100000` | `checkpoints/` フォルダに経過モデルを保存する頻度。 |
+| `--update-freq` | `100000` | 自己対戦の相手（過去の自分）を更新する頻度。 |
+| `--save-freq` | `500000` | `checkpoints/` フォルダに経過モデルを保存する頻度。 |
 | `--save-dir` | `mppo_ai/rl/output` | モデルやログを保存するフォルダ。 |
 | `--device` | `auto` | `cpu` または `cuda`（GPU使用）。 |
 | `--resume` | `None` | 学習を再開したい `.zip` モデルのパス。 |

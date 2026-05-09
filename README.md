@@ -121,8 +121,8 @@ python mppo_ai/rl/train.py [options]
 | `--score-to-win` | `40` | Score required to win a game. |
 | `--max-turns` | `500` | Maximum turns per game (truncation limit). |
 | `--n-envs` | `8` | Number of parallel environments. Match to CPU core count for best speed. |
-| `--update-freq` | `20000` | Steps between self-play opponent updates. |
-| `--save-freq` | `100000` | Steps between checkpoint saves. |
+| `--update-freq` | `100000` | Steps between self-play opponent updates. |
+| `--save-freq` | `500000` | Steps between checkpoint saves. |
 | `--save-dir` | `mppo_ai/rl/output` | Output directory for models and logs. |
 | `--device` | `auto` | `cpu` or `cuda` (GPU). |
 | `--resume` | `None` | Path to a `.zip` model to resume training from. |

@@ -259,22 +259,22 @@ def train(args):
             ),
         )
 
-    # Callbacks
+    # Callbacks (adjust frequencies by n_envs since SB3 counts n_calls)
     selfplay_cb = SelfPlayCallback(
         save_path=ckpt_dir,
-        update_freq=args.update_freq,
+        update_freq=max(1, args.update_freq // args.n_envs),
         keep_random_ratio=0.2,
         verbose=1,
     )
 
     checkpoint_cb = CheckpointCallback(
-        save_freq=args.save_freq,
+        save_freq=max(1, args.save_freq // args.n_envs),
         save_path=ckpt_dir,
         name_prefix="fafnir_rl",
         verbose=1,
     )
 
-    winrate_cb = WinRateLogCallback(log_freq=5000)
+    winrate_cb = WinRateLogCallback(log_freq=max(1, 5000 // args.n_envs))
     # liveview_cb = LiveViewCallback(display_freq=500)
 
     # Train!
@@ -308,9 +308,9 @@ def main():
                     help="Max turns per episode before truncation")
     ap.add_argument("--n-envs", type=int, default=8,
                     help="Number of parallel environments")
-    ap.add_argument("--update-freq", type=int, default=20_000,
+    ap.add_argument("--update-freq", type=int, default=100_000,
                     help="Steps between self-play opponent updates")
-    ap.add_argument("--save-freq", type=int, default=100_000,
+    ap.add_argument("--save-freq", type=int, default=500_000,
                     help="Steps between checkpoint saves")
     ap.add_argument("--save-dir", type=str, default="mppo_ai/rl/output",
                     help="Directory for checkpoints and logs")
