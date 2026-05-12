@@ -134,7 +134,7 @@ uvicorn server_0424:socket_app --host 0.0.0.0 --port 8765
 
 高速版を使用する場合:
 ```bash
-uvicorn fast_server_0424:socket_app --host 0.0.0.0 --port 8765 --loop uvloop --workers 4
+uvicorn fast_server_0424:socket_app --host 0.0.0.0 --port 8765 --workers 4
 ```
 
 ### 3.4. クライアント関連 (`mppo_ai/clients/` フォルダ)

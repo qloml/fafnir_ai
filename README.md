@@ -165,7 +165,7 @@ uvicorn server_0424:socket_app --host 0.0.0.0 --port 8765
 
 Start the fast server:  
 ```bash
-uvicorn fast_server_0424:socket_app --host 0.0.0.0 --port 8765 --loop uvloop --workers 4
+uvicorn fast_server_0424:socket_app --host 0.0.0.0 --port 8765 --workers 4
 ```
 
 ### Clients
