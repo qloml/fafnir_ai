@@ -45,7 +45,7 @@ _ok_sent_key: Optional[str] = None
 _restart_sent = False
 
 AUTO_NEXT = True
-THINK_DELAY = 0.05
+THINK_DELAY = 0.0
 DETERMINISTIC = True
 
 
@@ -297,7 +297,7 @@ async def brain_loop():
             import traceback
             traceback.print_exc()
 
-        await asyncio.sleep(0.10)
+        await asyncio.sleep(0.02)
 
 
 # ==========================================
@@ -370,7 +370,7 @@ async def main():
     ap.add_argument("--room", type=str, default="room1")
     ap.add_argument("--name", type=str, default="RLBot_v1")
     ap.add_argument("--deterministic", type=int, default=1)
-    ap.add_argument("--think-delay", type=float, default=0.05)
+    ap.add_argument("--think-delay", type=float, default=0.0)
     args = ap.parse_args()
 
     cfg["url"] = args.url
