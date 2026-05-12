@@ -132,6 +132,11 @@ uvicorn server_0424:socket_app --host 0.0.0.0 --port 8765
 ```
 ※ バグ修正版の `server_0424.py` を使用します。
 
+高速版を使用する場合:
+```bash
+uvicorn fast_server_0424:socket_app --host 0.0.0.0 --port 8765 --loop uvloop --workers 4
+```
+
 ### 3.4. クライアント関連 (`mppo_ai/clients/` フォルダ)
 サーバー (`server_0424.py`) を立ち上げた状態で、プレイヤーや観戦者として接続するためのプログラム群です。
 
