@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 
+import json
 import logging
 import orjson
 import socketio
@@ -503,8 +504,25 @@ def get_room(room_id: str) -> Room:
 # =========================
 # Socket / FastAPI
 # =========================
+class FastJSON:
+    @staticmethod
+    def dumps(*args, **kwargs):
+        try:
+            return orjson.dumps(args[0]).decode('utf-8')
+        except Exception as e:
+            logger.warning(f"orjson fallback: {e}")
+            kwargs.pop('separators', None)
+            return json.dumps(args[0], **kwargs)
+
+    @staticmethod
+    def loads(*args, **kwargs):
+        try:
+            return orjson.loads(args[0])
+        except Exception:
+            return json.loads(args[0], **kwargs)
+
 app = FastAPI()
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*", json=orjson)
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*", json=FastJSON)
 socket_app = socketio.ASGIApp(sio, app)
 
 
