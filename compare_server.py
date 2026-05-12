@@ -1006,7 +1006,8 @@ async def submit_bid(sid, data: Dict[str, Any]):
                     logger.warning(f"  {name}: {wins} wins ({wins/room.match_count*100:.1f}%)")
                 logger.warning(f"  Draws: {room.draws}")
                 logger.warning(f"======================================")
-                sys.exit(0)
+                import os
+                os._exit(0)
 
             return
 
@@ -1130,7 +1131,8 @@ async def proceed_phase(sid, data: Dict[str, Any]):
                 logger.warning(f"  {name}: {wins} wins ({wins/room.match_count*100:.1f}%)")
             logger.warning(f"  Draws: {room.draws}")
             logger.warning(f"======================================")
-            sys.exit(0)
+            import os
+            os._exit(0)
 
         return
 
