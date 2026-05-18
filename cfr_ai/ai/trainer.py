@@ -18,6 +18,7 @@ Architecture:
 import os
 import time
 import random
+import multiprocessing as mp
 import numpy as np
 import torch
 import torch.nn as nn
@@ -89,13 +90,15 @@ class DeepCFRTrainer:
         explore_epsilon: float = 0.6,
         device: str = "auto",
         save_dir: str = "cfr_ai/ai/checkpoints",
+        num_workers: int = 1,
     ):
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
-        print(f"[DeepCFR] Device: {self.device}, Actions: {NUM_ACTIONS}")
+        self.num_workers = num_workers
+        print(f"[DeepCFR] Device: {self.device}, Actions: {NUM_ACTIONS}, Workers: {self.num_workers}")
 
         self.hidden_dim = hidden_dim
         self.lr = lr
@@ -124,6 +127,9 @@ class DeepCFRTrainer:
         # Stats
         self.iteration = 0
         self.total_traversals = 0
+
+        # Multiprocessing pool (lazy-init)
+        self._pool = None
 
     # ============================================================
     # Outcome Sampling CFR Traversal
@@ -396,6 +402,12 @@ class DeepCFRTrainer:
     # Main Training Loop
     # ============================================================
     def run_iteration(self, num_traversals: int = 500):
+        if self.num_workers > 1:
+            return self._run_iteration_parallel(num_traversals)
+        return self._run_iteration_serial(num_traversals)
+
+    def _run_iteration_serial(self, num_traversals: int):
+        """Original single-process iteration."""
         self.iteration += 1
         self.regret_net.eval()
         self.strategy_net.eval()
@@ -414,7 +426,7 @@ class DeepCFRTrainer:
         traverse_time = time.time() - t0
         avg_value = total_value / num_traversals
 
-        # Train networks
+        # Train networks (use all threads for training)
         t1 = time.time()
         rl = self.train_regret_network()
         sl = self.train_strategy_network()
@@ -429,6 +441,95 @@ class DeepCFRTrainer:
             f"T={traverse_time:.1f}s Tr={train_time:.1f}s"
         )
         return {'regret_loss': rl, 'strategy_loss': sl, 'value_loss': vl}
+
+    def _run_iteration_parallel(self, num_traversals: int):
+        """Parallel traversal iteration using a persistent multiprocessing pool."""
+        from .parallel import _worker_init, _worker_traverse_batch
+
+        self.iteration += 1
+        self.regret_net.eval()
+        self.strategy_net.eval()
+        self.value_net.eval()
+
+        t0 = time.time()
+
+        # Create persistent pool on first call
+        if self._pool is None:
+            print(f"[DeepCFR] Creating worker pool ({self.num_workers} workers)...")
+            self._pool = mp.Pool(
+                processes=self.num_workers,
+                initializer=_worker_init,
+                initargs=(self.hidden_dim,),
+            )
+
+        # Prepare model state dicts (CPU tensors for serialization)
+        regret_sd = {k: v.cpu() for k, v in self.regret_net.state_dict().items()}
+        value_sd = {k: v.cpu() for k, v in self.value_net.state_dict().items()}
+
+        # Distribute traversals across workers
+        per_worker = num_traversals // self.num_workers
+        remainder = num_traversals % self.num_workers
+
+        work_items = []
+        offset = self.total_traversals
+        for w in range(self.num_workers):
+            n = per_worker + (1 if w < remainder else 0)
+            work_items.append((
+                n, offset, self.iteration,
+                self.max_depth, self.num_augments, self.explore_epsilon,
+                regret_sd, value_sd,
+            ))
+            offset += n
+
+        try:
+            results = self._pool.map(_worker_traverse_batch, work_items)
+        except Exception as e:
+            print(f"[DeepCFR] Pool error: {e}, recreating pool...")
+            self._pool.terminate()
+            self._pool = None
+            # Fall back to serial for this iteration
+            return self._run_iteration_serial(num_traversals)
+
+        # Aggregate results
+        total_value = 0.0
+        total_trav = 0
+        for r in results:
+            total_value += r['total_value']
+            total_trav += r['num_traversals']
+            for sample in r['regret_samples']:
+                self.regret_buffer.add(*sample)
+            for sample in r['strategy_samples']:
+                self.strategy_buffer.add(*sample)
+            for sample in r['value_samples']:
+                self.value_buffer.add(*sample)
+
+        self.total_traversals += total_trav
+        traverse_time = time.time() - t0
+        avg_value = total_value / max(total_trav, 1)
+
+        # Train networks (use multiple threads for matrix ops)
+        torch.set_num_threads(self.num_workers)
+        t1 = time.time()
+        rl = self.train_regret_network()
+        sl = self.train_strategy_network()
+        vl = self.train_value_network()
+        train_time = time.time() - t1
+
+        print(
+            f"[DeepCFR] Iter={self.iteration} | "
+            f"Trav={self.total_traversals} AvgV={avg_value:.3f} | "
+            f"Buf: R={len(self.regret_buffer)} S={len(self.strategy_buffer)} V={len(self.value_buffer)} | "
+            f"Loss: R={rl:.4f} S={sl:.4f} V={vl:.4f} | "
+            f"T={traverse_time:.1f}s Tr={train_time:.1f}s [{self.num_workers}w]"
+        )
+        return {'regret_loss': rl, 'strategy_loss': sl, 'value_loss': vl}
+
+    def shutdown_pool(self):
+        """Cleanly shut down the worker pool."""
+        if self._pool is not None:
+            self._pool.terminate()
+            self._pool.join()
+            self._pool = None
 
     # ============================================================
     # Save / Load

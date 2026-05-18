@@ -178,3 +178,7 @@ pyrightconfig.json
 # RL Output
 rl/output/
 output/
+
+# CFR AI
+checkpoints/
+logs/

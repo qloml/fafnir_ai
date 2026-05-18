@@ -69,6 +69,10 @@ ACTION_TABLE: List[Tuple[int, ...]] = _build_action_table(MAX_TOTAL_BID, MAX_PER
 NUM_ACTIONS = len(ACTION_TABLE)
 print(f"[ActionSpace] Total actions: {NUM_ACTIONS}")
 
+# Pre-computed numpy array for vectorized legal mask computation
+# Shape: [NUM_ACTIONS, NUM_COLORS]
+ACTION_TABLE_NP = np.array(ACTION_TABLE, dtype=np.int32)
+
 # Reverse mapping: tuple -> action_id
 ACTION_TO_ID: Dict[Tuple[int, ...], int] = {a: i for i, a in enumerate(ACTION_TABLE)}
 
@@ -87,26 +91,24 @@ def get_legal_mask(hand: List[int], offer: List[int]) -> np.ndarray:
     An action is legal if:
     1. For each color, bid[color] <= hand[color]
     2. For colors present in offer, bid[color] == 0
+
+    Uses vectorized NumPy operations for speed.
     """
-    mask = np.zeros(NUM_ACTIONS, dtype=np.bool_)
+    hand_arr = np.array(hand, dtype=np.int32)
+    offer_arr = np.array(offer, dtype=np.int32)
 
-    forbidden = set()
-    for i in range(NUM_COLORS):
-        if offer[i] > 0:
-            forbidden.add(i)
+    # Check 1: All bid counts <= hand counts (per color)
+    # ACTION_TABLE_NP: [N, 6], hand_arr: [6] -> broadcast to [N, 6]
+    hand_ok = np.all(ACTION_TABLE_NP <= hand_arr, axis=1)
 
-    for aid, action in enumerate(ACTION_TABLE):
-        legal = True
-        for c in range(NUM_COLORS):
-            if action[c] > 0:
-                if c in forbidden:
-                    legal = False
-                    break
-                if action[c] > hand[c]:
-                    legal = False
-                    break
-        if legal:
-            mask[aid] = True
+    # Check 2: For colors in offer (offer > 0), bid must be 0
+    forbidden_colors = offer_arr > 0  # shape [6], bool
+    if forbidden_colors.any():
+        # For forbidden colors, action must have 0
+        forbidden_ok = np.all(ACTION_TABLE_NP[:, forbidden_colors] == 0, axis=1)
+        mask = hand_ok & forbidden_ok
+    else:
+        mask = hand_ok
 
     return mask
 

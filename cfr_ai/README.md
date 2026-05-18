@@ -79,33 +79,40 @@ pip install torch
 ### 学習
 
 ```bash
-python -m cfr_ai.ai.train --iterations 100 --traversals 500 --hidden 256
+# デフォルト設定でそのまま実行可能
+python -m cfr_ai.ai.train
 ```
+
+> `Ctrl+C` で中断しても、自動的にチェックポイントが保存されます。
+> 再開するには `--resume` を追加してください。
 
 主なオプション:
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
 | `--iterations` | 100 | CFR反復回数 |
-| `--traversals` | 200 | 1反復あたりの自己対戦回数 |
-| `--hidden` | 256 | NN隠れ層の次元数 |
+| `--traversals` | 500 | 1反復あたりの自己対戦回数 |
+| `--hidden` | 128 | NN隠れ層の次元数 |
 | `--lr` | 0.001 | 学習率 |
-| `--batch-size` | 2048 | 学習バッチサイズ |
+| `--batch-size` | 1024 | 学習バッチサイズ |
+| `--train-steps` | 500 | 1反復あたりのNN学習ステップ数 |
 | `--max-depth` | 30 | 1トラバーサルの最大ターン数 |
 | `--augments` | 3 | 色対称性の拡張数 |
 | `--save-dir` | `cfr_ai/ai/checkpoints` | チェックポイント保存先 |
 | `--resume` | - | 前回の学習から再開 |
 | `--save-every` | 10 | N反復ごとに保存 |
+| `--device` | cpu | cpu/cuda/auto |
+| `--workers` | 自動（CPUコア数-1） | 並列ワーカー数 |
 
-### 学習時間の目安（CPU）
+### 学習時間の目安（Ryzen 7 5800HS, 7ワーカー並列, hidden=128）
 
 | 設定 | 時間 |
 |---|---|
-| 50 traversals × 1 iter | 約50秒 |
-| 500 traversals × 100 iter | 約12〜15時間 |
-| 1000 traversals × 200 iter | 約2〜3日 |
+| 50 traversals × 3 iter | 約2.5分（実測） |
+| 200 traversals × 50 iter | 約3〜4時間 |
+| 500 traversals × 100 iter | 約10〜15時間 |
 
-> GPU（CUDA）があれば NN の学習部分が高速化されます
+> `--workers 1` を指定するとシングルプロセスモードになります（約4.6倍遅い）
 
 ### 対戦ボットの起動
 

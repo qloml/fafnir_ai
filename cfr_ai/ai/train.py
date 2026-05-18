@@ -16,28 +16,40 @@ Options:
     --save-dir PATH      Checkpoint save directory
     --resume             Resume from checkpoint
     --device DEVICE      cpu/cuda/auto (default: auto)
+    --workers N          Number of parallel workers (default: auto = CPU cores - 1)
 """
 import argparse
+import os
 import time
+import signal
+import sys
 from .trainer import DeepCFRTrainer
 
 
 def main():
     parser = argparse.ArgumentParser(description="Deep CFR Training for Fafnir")
     parser.add_argument("--iterations", type=int, default=100)
-    parser.add_argument("--traversals", type=int, default=200)
-    parser.add_argument("--hidden", type=int, default=256)
+    parser.add_argument("--traversals", type=int, default=500)
+    parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--train-steps", type=int, default=1000)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--train-steps", type=int, default=500)
     parser.add_argument("--max-depth", type=int, default=30)
     parser.add_argument("--augments", type=int, default=3)
     parser.add_argument("--save-dir", type=str, default="cfr_ai/ai/checkpoints")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--save-every", type=int, default=10,
                         help="Save checkpoint every N iterations")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Parallel workers (0=auto, 1=single-process)")
     args = parser.parse_args()
+
+    # Auto-detect workers: use CPU cores - 1 (leave 1 for main process)
+    if args.workers <= 0:
+        cpu_count = os.cpu_count() or 4
+        args.workers = max(1, cpu_count - 1)
+        print(f"[DeepCFR] Auto-detected {cpu_count} CPU cores, using {args.workers} workers")
 
     trainer = DeepCFRTrainer(
         hidden_dim=args.hidden,
@@ -48,31 +60,57 @@ def main():
         num_augments=args.augments,
         device=args.device,
         save_dir=args.save_dir,
+        num_workers=args.workers,
     )
 
     if args.resume:
         trainer.load()
+
+    # Graceful Ctrl+C handling: save before exit
+    interrupted = False
+
+    def signal_handler(sig, frame):
+        nonlocal interrupted
+        if interrupted:
+            # Second Ctrl+C: force exit
+            print("\n[DeepCFR] Force exit!")
+            trainer.shutdown_pool()
+            sys.exit(1)
+        interrupted = True
+        print(f"\n[DeepCFR] Interrupt received! Saving checkpoint...")
+        trainer.shutdown_pool()
+        trainer.save()
+        print(f"[DeepCFR] Saved. Exiting.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
 
     print(f"\n{'='*60}")
     print(f"  Deep CFR Training for Fafnir")
     print(f"  Iterations: {args.iterations}")
     print(f"  Traversals/iter: {args.traversals}")
     print(f"  Hidden dim: {args.hidden}")
+    print(f"  Workers: {args.workers}")
     print(f"  Device: {trainer.device}")
     print(f"  Save dir: {args.save_dir}")
+    print(f"  Ctrl+C to stop (progress will be saved)")
     print(f"{'='*60}\n")
 
     total_start = time.time()
 
     for i in range(args.iterations):
+        if interrupted:
+            break
         stats = trainer.run_iteration(num_traversals=args.traversals)
 
         # Save periodically
         if (i + 1) % args.save_every == 0:
             trainer.save()
 
-    # Final save
-    trainer.save()
+    # Final save and cleanup
+    if not interrupted:
+        trainer.save()
+    trainer.shutdown_pool()
 
     total_time = time.time() - total_start
     print(f"\n[DeepCFR] Training complete! Total time: {total_time:.1f}s")
