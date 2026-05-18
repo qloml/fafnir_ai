@@ -15,13 +15,18 @@ from typing import Any, Dict, List, Optional
 
 import socketio
 
-from action_space import (
+import sys
+import os
+# Add project root to sys.path so we can import from cfr_ai
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
+from cfr_ai.ai.action_space import (
     NUM_ACTIONS, get_legal_mask, action_id_to_stones, action_id_to_counts,
     PASS_ACTION_ID, ACTION_TABLE,
 )
-from observation import BidTracker, build_observation_from_server_state, NUM_COLORS
-from game_engine import COLOR_TO_IDX, ALL_COLORS
-from networks import StrategyNetwork, RegretNetwork, masked_softmax, regret_matching
+from cfr_ai.ai.observation import BidTracker, build_observation_from_server_state, NUM_COLORS
+from cfr_ai.ai.game_engine import COLOR_TO_IDX, ALL_COLORS
+from cfr_ai.ai.networks import StrategyNetwork, RegretNetwork, masked_softmax, regret_matching
 
 import torch
 

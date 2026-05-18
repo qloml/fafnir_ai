@@ -28,6 +28,10 @@ from .networks import (
 )
 from .symmetry import augment_sample
 
+_w_regret_net = None
+_w_value_net = None
+_w_hidden_dim = None
+
 
 def _worker_init(hidden_dim: int):
     """
