@@ -74,14 +74,16 @@ def main():
         if interrupted:
             # Second Ctrl+C: force exit
             print("\n[DeepCFR] Force exit!")
-            trainer.shutdown_pool()
-            sys.exit(1)
+            os._exit(1)
         interrupted = True
         print(f"\n[DeepCFR] Interrupt received! Saving checkpoint...")
-        trainer.shutdown_pool()
-        trainer.save()
+        try:
+            trainer.shutdown_pool()
+            trainer.save()
+        except Exception as e:
+            print(f"[DeepCFR] Error during save: {e}")
         print(f"[DeepCFR] Saved. Exiting.")
-        sys.exit(0)
+        os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
 

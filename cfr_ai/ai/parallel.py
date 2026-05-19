@@ -10,6 +10,7 @@ Designed for Windows (spawn-based multiprocessing).
 import numpy as np
 import torch
 import random
+import signal
 from typing import List, Tuple, Dict, Any, Optional
 
 from .game_engine import (
@@ -41,6 +42,9 @@ def _worker_init(hidden_dim: int):
     global _w_regret_net, _w_value_net, _w_hidden_dim
 
     _w_hidden_dim = hidden_dim
+
+    # Ignore Ctrl+C in workers. Let the main process handle the shutdown cleanly.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # Use single thread per worker to avoid oversubscription
     torch.set_num_threads(1)
