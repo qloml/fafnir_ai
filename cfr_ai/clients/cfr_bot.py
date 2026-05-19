@@ -374,10 +374,11 @@ async def main():
     if os.path.exists(args.checkpoint):
         print(f"[CFR] Loading checkpoint: {args.checkpoint}")
         ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        hidden_dim = ckpt.get('hidden_dim', 128)
         strategy_net = StrategyNetwork(
             obs_dim=34,
             num_actions=NUM_ACTIONS,
-            hidden=256,
+            hidden=hidden_dim,
         ).to(device)
         strategy_net.load_state_dict(ckpt['strategy_net'])
         strategy_net.eval()

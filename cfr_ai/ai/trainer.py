@@ -287,11 +287,10 @@ class DeepCFRTrainer:
         self, state: FafnirState, traverser: int, tracker: BidTracker
     ) -> float:
         if state.phase == "GAME_END":
-            if state.scores[traverser] > state.scores[1 - traverser]:
-                return 1.0
-            elif state.scores[traverser] < state.scores[1 - traverser]:
-                return -1.0
-            return 0.0
+            score_diff = state.scores[traverser] - state.scores[1 - traverser]
+            # Fafnirの想定スコア差（最大50程度）で割り、-1.0〜1.0に収める
+            reward = score_diff / 50.0
+            return max(-1.0, min(1.0, float(reward)))
 
         # Use value network for non-terminal
         obs = build_observation(state, traverser, tracker)
