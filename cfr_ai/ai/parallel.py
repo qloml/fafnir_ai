@@ -203,7 +203,7 @@ def _single_traverse(
         dp = decision_points[0]
         obs_init = dp['obs'][traverser]
         val_target = np.array([terminal_value], dtype=np.float32)
-        value_samples.append((obs_init, val_target, iteration, np.ones(1)))
+        value_samples.append((obs_init, val_target, iteration))
 
     return terminal_value, regret_samples, strategy_samples, value_samples
 
@@ -244,10 +244,13 @@ def _process_decision_points(
 
         regret_target = np.zeros(NUM_ACTIONS, dtype=np.float32)
         weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
-        regret_target[chosen_action] = terminal_value * weight
+        regret_value = terminal_value * weight
+        regret_target[chosen_action] = regret_value
 
-        regret_samples.append((obs, regret_target, iteration, mask))
-        strategy_samples.append((obs, strategy, iteration, mask))
+        # Store sparse regret (action_id, value)
+        sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
+        regret_samples.append((obs, sparse_regret, iteration))
+        strategy_samples.append((obs, strategy, iteration))
 
         # Augmentation
         if num_augments > 0 and random.random() < 0.5:
@@ -255,9 +258,10 @@ def _process_decision_points(
                 obs, regret_target, ACTION_TABLE, num_augments
             )
             for aug_obs, aug_regrets in aug_pairs:
-                aug_hand = aug_obs[:6].astype(int).tolist()
-                aug_offer = aug_obs[6:12].astype(int).tolist()
-                aug_mask = get_legal_mask(aug_hand, aug_offer)
-                regret_samples.append((aug_obs, aug_regrets, iteration, aug_mask))
+                nonzero = np.nonzero(aug_regrets)[0]
+                if len(nonzero) > 0:
+                    aug_aid = nonzero[0]
+                    aug_sparse = np.array([aug_aid, aug_regrets[aug_aid]], dtype=np.float32)
+                    regret_samples.append((aug_obs, aug_sparse, iteration))
 
     return regret_samples, strategy_samples

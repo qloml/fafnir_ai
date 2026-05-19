@@ -145,7 +145,7 @@ def regret_matching(
         # Uniform over legal actions
         legal_count = legal_mask.sum()
         if legal_count > 0:
-            return legal_mask.astype(np.float64) / legal_count
+            return legal_mask.astype(np.float32) / legal_count
         else:
             # Should never happen - at minimum, pass (zero-bid) is legal
             probs = np.zeros_like(regrets)
@@ -176,7 +176,7 @@ def masked_softmax(
     else:
         legal_count = legal_mask.sum()
         if legal_count > 0:
-            return legal_mask.astype(np.float64) / legal_count
+            return legal_mask.astype(np.float32) / legal_count
         probs = np.zeros_like(logits)
         probs[0] = 1.0
         return probs

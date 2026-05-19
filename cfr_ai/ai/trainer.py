@@ -46,27 +46,50 @@ from .symmetry import augment_sample
 # Reservoir Buffer
 # ============================================================
 class ReservoirBuffer:
-    """Reservoir sampling buffer for Deep CFR."""
+    """Reservoir sampling buffer for Deep CFR.
+    
+    legal_mask is NOT stored; it is reconstructed from obs at sample time
+    to save ~12KB per sample (3003 floats * 4 bytes).
+    """
 
     def __init__(self, capacity: int = 2_000_000):
         self.capacity = capacity
-        self.buffer: List[Tuple[np.ndarray, np.ndarray, int, np.ndarray]] = []
+        self.buffer: List[Tuple[np.ndarray, np.ndarray, int]] = []
         self.total_seen = 0
+        self._needs_mask = True  # whether to reconstruct masks on sample
+        self._sparse_target = False  # if True, target is (action_id, value) pair
 
-    def add(self, obs: np.ndarray, target: np.ndarray, iteration: int, legal_mask: np.ndarray):
+    def add(self, obs: np.ndarray, target: np.ndarray, iteration: int, legal_mask: np.ndarray = None):
+        """Add a sample. legal_mask arg is accepted but ignored (for API compat)."""
         self.total_seen += 1
         if len(self.buffer) < self.capacity:
-            self.buffer.append((obs, target, iteration, legal_mask))
+            self.buffer.append((obs, target, iteration))
         else:
             idx = random.randint(0, self.total_seen - 1)
             if idx < self.capacity:
-                self.buffer[idx] = (obs, target, iteration, legal_mask)
+                self.buffer[idx] = (obs, target, iteration)
 
-    def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample(self, batch_size: int, num_actions: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         indices = random.sample(range(len(self.buffer)), min(batch_size, len(self.buffer)))
         obs = np.stack([self.buffer[i][0] for i in indices])
-        targets = np.stack([self.buffer[i][1] for i in indices])
-        masks = np.stack([self.buffer[i][3] for i in indices])
+        # Reconstruct dense targets from sparse (action_id, value) pairs
+        if self._sparse_target and num_actions > 0:
+            targets = np.zeros((len(indices), num_actions), dtype=np.float32)
+            for j, i in enumerate(indices):
+                sparse = self.buffer[i][1]  # [action_id, value]
+                targets[j, int(sparse[0])] = sparse[1]
+        else:
+            targets = np.stack([self.buffer[i][1] for i in indices])
+        # Reconstruct legal masks from obs (hand=obs[0:6], offer=obs[6:12])
+        if self._needs_mask and (num_actions > 1 or (not self._sparse_target and targets.shape[-1] > 1)):
+            masks = np.stack([
+                get_legal_mask(
+                    self.buffer[i][0][:6].astype(int).tolist(),
+                    self.buffer[i][0][6:12].astype(int).tolist(),
+                ) for i in indices
+            ])
+        else:
+            masks = np.ones((len(indices), 1), dtype=np.float32)
         return obs, targets, masks
 
     def __len__(self):
@@ -121,6 +144,7 @@ class DeepCFRTrainer:
 
         # Buffers
         self.regret_buffer = ReservoirBuffer(buffer_capacity)
+        self.regret_buffer._sparse_target = True  # regret targets are single-action sparse
         self.strategy_buffer = ReservoirBuffer(buffer_capacity)
         self.value_buffer = ReservoirBuffer(buffer_capacity)
 
@@ -255,7 +279,7 @@ class DeepCFRTrainer:
             dp = decision_points[0]
             obs_init = dp['obs'][traverser]
             val_target = np.array([terminal_value], dtype=np.float32)
-            self.value_buffer.add(obs_init, val_target, self.iteration, np.ones(1))
+            self.value_buffer.add(obs_init, val_target, self.iteration)
 
         return terminal_value
 
@@ -302,34 +326,33 @@ class DeepCFRTrainer:
             chosen_action = dp['actions'][traverser]
             sample_prob = dp['sample_probs'][traverser]
 
-            # Construct regret target
-            # For the chosen action, regret = terminal_value - EV
-            # For unchosen actions, regret = 0 (no information)
-            # This is a simplified version - the NN will learn to interpolate
-            regret_target = np.zeros(NUM_ACTIONS, dtype=np.float32)
-
+            # Construct sparse regret target: only the chosen action has a value
             # Weight by inverse sampling probability for importance correction
             weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
+            regret_value = terminal_value * weight
 
-            # Set regret for chosen action
-            regret_target[chosen_action] = terminal_value * weight
-
-            # Store regret sample
-            self.regret_buffer.add(obs, regret_target, self.iteration, mask)
+            # Store regret sample as sparse (action_id, value) pair
+            sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
+            self.regret_buffer.add(obs, sparse_regret, self.iteration)
 
             # Store strategy sample (weighted by iteration for averaging)
-            self.strategy_buffer.add(obs, strategy, self.iteration, mask)
+            self.strategy_buffer.add(obs, strategy, self.iteration)
 
             # Color symmetry augmentation
             if self.num_augments > 0 and random.random() < 0.5:
+                # Build full regret vector only for augmentation (temporary)
+                regret_target = np.zeros(NUM_ACTIONS, dtype=np.float32)
+                regret_target[chosen_action] = regret_value
                 aug_pairs = augment_sample(
                     obs, regret_target, ACTION_TABLE, self.num_augments
                 )
                 for aug_obs, aug_regrets in aug_pairs:
-                    aug_hand = aug_obs[:6].astype(int).tolist()
-                    aug_offer = aug_obs[6:12].astype(int).tolist()
-                    aug_mask = get_legal_mask(aug_hand, aug_offer)
-                    self.regret_buffer.add(aug_obs, aug_regrets, self.iteration, aug_mask)
+                    # Find the single non-zero action in augmented regrets
+                    nonzero = np.nonzero(aug_regrets)[0]
+                    if len(nonzero) > 0:
+                        aug_aid = nonzero[0]
+                        aug_sparse = np.array([aug_aid, aug_regrets[aug_aid]], dtype=np.float32)
+                        self.regret_buffer.add(aug_obs, aug_sparse, self.iteration)
 
     # ============================================================
     # Network Training
@@ -341,7 +364,7 @@ class DeepCFRTrainer:
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.regret_buffer) // self.batch_size)
         for _ in range(steps):
-            obs, targets, masks = self.regret_buffer.sample(self.batch_size)
+            obs, targets, masks = self.regret_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS)
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)
@@ -362,7 +385,7 @@ class DeepCFRTrainer:
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.strategy_buffer) // self.batch_size)
         for _ in range(steps):
-            obs, targets, masks = self.strategy_buffer.sample(self.batch_size)
+            obs, targets, masks = self.strategy_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS)
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)

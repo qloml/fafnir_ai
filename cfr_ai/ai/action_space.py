@@ -28,10 +28,12 @@ from .game_engine import NUM_COLORS, ALL_COLORS, COLOR_TO_IDX
 # Action Enumeration
 # ============================================================
 # Bid limits (NN output size):
-#   max_total = 15 : covers 98.8% of hand sizes without clipping
-#   max_per_color = 15 : covers gold (max 20 in game, but 15+ in hand is rare)
-MAX_PER_COLOR_BID = 15
-MAX_TOTAL_BID = 15
+#   max_total = 8 : covers the vast majority of practical bids
+#   max_per_color = 8 : sufficient for any single-color bid
+#   Rare larger bids are handled by clip_bid_to_range()
+#   This gives 3,003 actions (vs 54,264 with max=15), ~18x memory reduction
+MAX_PER_COLOR_BID = 8
+MAX_TOTAL_BID = 8
 
 
 def _build_action_table(max_total: int, max_per_color: int) -> List[Tuple[int, ...]]:

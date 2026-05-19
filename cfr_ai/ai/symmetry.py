@@ -23,6 +23,19 @@ NON_GOLD_INDICES = [1, 2, 3, 4, 5]
 # All permutations of non-gold indices (5! = 120)
 ALL_PERMS = list(permutations(NON_GOLD_INDICES))
 
+# Cached action-to-id mapping (built lazily on first use)
+_ACTION_TO_ID: dict | None = None
+_ACTION_TO_ID_SIZE: int = 0
+
+
+def _get_action_to_id(action_table):
+    """Return cached {action_tuple: id} dict, building it once on first call."""
+    global _ACTION_TO_ID, _ACTION_TO_ID_SIZE
+    if _ACTION_TO_ID is None or _ACTION_TO_ID_SIZE != len(action_table):
+        _ACTION_TO_ID = {a: i for i, a in enumerate(action_table)}
+        _ACTION_TO_ID_SIZE = len(action_table)
+    return _ACTION_TO_ID
+
 
 def apply_color_permutation(
     obs: np.ndarray,
@@ -90,7 +103,7 @@ def apply_color_permutation_to_action_regrets(
     inv_perm_list = inv_perm
 
     # For each action, find its permuted counterpart
-    action_to_id = {a: i for i, a in enumerate(action_table)}
+    action_to_id = _get_action_to_id(action_table)
 
     for aid, action in enumerate(action_table):
         # Permute the action
