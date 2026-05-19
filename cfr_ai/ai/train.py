@@ -29,19 +29,19 @@ from .trainer import DeepCFRTrainer
 def main():
     parser = argparse.ArgumentParser(description="Deep CFR Training for Fafnir")
     parser.add_argument("--iterations", type=int, default=100)
-    parser.add_argument("--traversals", type=int, default=500)
+    parser.add_argument("--traversals", type=int, default=300)
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--train-steps", type=int, default=500)
+    parser.add_argument("--train-steps", type=int, default=200)
     parser.add_argument("--max-depth", type=int, default=30)
     parser.add_argument("--augments", type=int, default=3)
     parser.add_argument("--save-dir", type=str, default="cfr_ai/ai/checkpoints")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--save-every", type=int, default=10,
                         help="Save checkpoint every N iterations")
-    parser.add_argument("--workers", type=int, default=1,
+    parser.add_argument("--workers", type=int, default=2,
                         help="Parallel workers (0=auto, 1=single-process)")
     args = parser.parse_args()
 
