@@ -157,3 +157,52 @@ def augment_sample(
         results.append((aug_obs, aug_regrets))
 
     return results
+
+
+def augment_sample_sparse(
+    obs: np.ndarray,
+    action_id: int,
+    value: float,
+    action_table: List[Tuple[int, ...]],
+    num_augments: int = 4,
+) -> List[Tuple[np.ndarray, int, float]]:
+    """
+    Sparse-optimized augmentation: O(1) per permutation instead of O(NUM_ACTIONS).
+
+    Instead of permuting a full 3003-element regret array, directly permute
+    the single (action_id, value) pair.
+
+    Returns list of (augmented_obs, new_action_id, value) tuples.
+    """
+    action_to_id = _get_action_to_id(action_table)
+    original_action = action_table[action_id]
+
+    seen = set()
+    results = []
+
+    for _ in range(num_augments * 3):
+        if len(results) >= num_augments:
+            break
+
+        perm = random_color_permutation()
+        if perm in seen or perm == tuple(NON_GOLD_INDICES):
+            continue
+        seen.add(perm)
+
+        # Permute observation
+        aug_obs = apply_color_permutation(obs, perm)
+
+        # Permute the single action: O(1) instead of O(3003)
+        inv_perm = [0] * 6
+        inv_perm[0] = 0
+        for new_idx, old_idx in enumerate(perm):
+            inv_perm[old_idx] = new_idx + 1
+
+        new_action = tuple(original_action[inv_perm[c]] for c in range(6))
+        new_aid = action_to_id.get(new_action)
+
+        if new_aid is not None:
+            results.append((aug_obs, new_aid, value))
+
+    return results
+

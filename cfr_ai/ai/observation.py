@@ -98,20 +98,16 @@ def build_observation(
     opp = 1 - player
 
     # [0-5] My hand
-    for c in range(NUM_COLORS):
-        obs[c] = state.hand[player][c]
+    obs[0:6] = state.hand[player]
 
     # [6-11] Current offer
-    for c in range(NUM_COLORS):
-        obs[6 + c] = state.offer[c]
+    obs[6:12] = state.offer
 
     # [12-17] Trash
-    for c in range(NUM_COLORS):
-        obs[12 + c] = state.trash[c]
+    obs[12:18] = state.trash
 
     # [18-23] Opponent's confirmed hand
-    for c in range(NUM_COLORS):
-        obs[18 + c] = bid_tracker.confirmed[opp][c]
+    obs[18:24] = bid_tracker.confirmed[opp]
 
     # [24] Opponent's unknown card count
     opp_total = sum(state.hand[opp])
@@ -119,8 +115,7 @@ def build_observation(
     obs[24] = max(0, opp_total - opp_confirmed_total)
 
     # [25-30] My confirmed hand (what opponent knows about me)
-    for c in range(NUM_COLORS):
-        obs[25 + c] = bid_tracker.confirmed[player][c]
+    obs[25:31] = bid_tracker.confirmed[player]
 
     # [31] Bag remaining (normalized to [0, 1])
     obs[31] = state.bag_left() / TOTAL_STONES

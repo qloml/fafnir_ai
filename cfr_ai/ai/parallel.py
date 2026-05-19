@@ -27,7 +27,7 @@ from .networks import (
     RegretNetwork, StrategyNetwork, ValueNetwork,
     regret_matching,
 )
-from .symmetry import augment_sample
+from .symmetry import augment_sample_sparse
 
 _w_regret_net = None
 _w_value_net = None
@@ -128,7 +128,7 @@ def _single_traverse(
             obs[p] = build_observation(state, p, tracker)
             masks[p] = get_legal_mask(state.hand[p], state.offer)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 obs_t = torch.tensor(obs[p], dtype=torch.float32).unsqueeze(0)
                 regrets = _w_regret_net(obs_t).numpy()[0]
             strategies[p] = regret_matching(regrets, masks[p])
@@ -144,7 +144,7 @@ def _single_traverse(
 
             if p == traverser:
                 eps = explore_epsilon
-                explore_probs = masks[p].astype(np.float64) / max(1, masks[p].sum())
+                explore_probs = masks[p].astype(np.float32) / max(1, masks[p].sum())
                 mixed = (1 - eps) * strategies[p] + eps * explore_probs
                 mixed_legal = mixed[legal]
                 mixed_legal = mixed_legal / (mixed_legal.sum() + 1e-10)
@@ -222,7 +222,7 @@ def _compute_terminal_value(
         return max(-1.0, min(1.0, float(reward)))
 
     obs = build_observation(state, traverser, tracker)
-    with torch.no_grad():
+    with torch.inference_mode():
         obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
         return _w_value_net(obs_t).item()
 
@@ -245,26 +245,27 @@ def _process_decision_points(
         chosen_action = dp['actions'][traverser]
         sample_prob = dp['sample_probs'][traverser]
 
-        regret_target = np.zeros(NUM_ACTIONS, dtype=np.float32)
         weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
         regret_value = terminal_value * weight
-        regret_target[chosen_action] = regret_value
 
         # Store sparse regret (action_id, value)
         sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
         regret_samples.append((obs, sparse_regret, iteration))
-        strategy_samples.append((obs, strategy, iteration))
+        
+        # Store sparse strategy
+        nonzero_strats = np.nonzero(strategy)[0]
+        sparse_strat = np.zeros((len(nonzero_strats), 2), dtype=np.float32)
+        sparse_strat[:, 0] = nonzero_strats
+        sparse_strat[:, 1] = strategy[nonzero_strats]
+        strategy_samples.append((obs, sparse_strat, iteration))
 
-        # Augmentation
+        # Augmentation (sparse-optimized: O(1) per perm)
         if num_augments > 0 and random.random() < 0.5:
-            aug_pairs = augment_sample(
-                obs, regret_target, ACTION_TABLE, num_augments
+            aug_triples = augment_sample_sparse(
+                obs, chosen_action, regret_value, ACTION_TABLE, num_augments
             )
-            for aug_obs, aug_regrets in aug_pairs:
-                nonzero = np.nonzero(aug_regrets)[0]
-                if len(nonzero) > 0:
-                    aug_aid = nonzero[0]
-                    aug_sparse = np.array([aug_aid, aug_regrets[aug_aid]], dtype=np.float32)
-                    regret_samples.append((aug_obs, aug_sparse, iteration))
+            for aug_obs, aug_aid, aug_val in aug_triples:
+                aug_sparse = np.array([aug_aid, aug_val], dtype=np.float32)
+                regret_samples.append((aug_obs, aug_sparse, iteration))
 
     return regret_samples, strategy_samples

@@ -39,7 +39,7 @@ from .networks import (
     RegretNetwork, StrategyNetwork, ValueNetwork,
     regret_matching, masked_softmax,
 )
-from .symmetry import augment_sample
+from .symmetry import augment_sample, augment_sample_sparse
 
 
 # ============================================================
@@ -58,6 +58,7 @@ class ReservoirBuffer:
         self.total_seen = 0
         self._needs_mask = True  # whether to reconstruct masks on sample
         self._sparse_target = False  # if True, target is (action_id, value) pair
+        self._sparse_strategy = False  # if True, target is list of [action_id, prob]
 
     def add(self, obs: np.ndarray, target: np.ndarray, iteration: int, legal_mask: np.ndarray = None):
         """Add a sample. legal_mask arg is accepted but ignored (for API compat)."""
@@ -78,10 +79,18 @@ class ReservoirBuffer:
             for j, i in enumerate(indices):
                 sparse = self.buffer[i][1]  # [action_id, value]
                 targets[j, int(sparse[0])] = sparse[1]
+        elif getattr(self, '_sparse_strategy', False) and num_actions > 0:
+            targets = np.zeros((len(indices), num_actions), dtype=np.float32)
+            for j, i in enumerate(indices):
+                sparse = self.buffer[i][1]  # [[act_id, prob], ...]
+                if len(sparse) > 0:
+                    act_ids = sparse[:, 0].astype(int)
+                    probs = sparse[:, 1]
+                    targets[j, act_ids] = probs
         else:
             targets = np.stack([self.buffer[i][1] for i in indices])
         # Reconstruct legal masks from obs (hand=obs[0:6], offer=obs[6:12])
-        if self._needs_mask and (num_actions > 1 or (not self._sparse_target and targets.shape[-1] > 1)):
+        if self._needs_mask and num_actions > 1:
             masks = np.stack([
                 get_legal_mask(
                     self.buffer[i][0][:6].astype(int).tolist(),
@@ -146,6 +155,7 @@ class DeepCFRTrainer:
         self.regret_buffer = ReservoirBuffer(buffer_capacity)
         self.regret_buffer._sparse_target = True  # regret targets are single-action sparse
         self.strategy_buffer = ReservoirBuffer(buffer_capacity)
+        self.strategy_buffer._sparse_strategy = True
         self.value_buffer = ReservoirBuffer(buffer_capacity)
 
         # Stats
@@ -187,7 +197,7 @@ class DeepCFRTrainer:
                 obs[p] = build_observation(state, p, tracker)
                 masks[p] = get_legal_mask(state.hand[p], state.offer)
 
-                with torch.no_grad():
+                with torch.inference_mode():
                     obs_t = torch.tensor(obs[p], dtype=torch.float32, device=self.device).unsqueeze(0)
                     regrets = self.regret_net(obs_t).cpu().numpy()[0]
                 strategies[p] = regret_matching(regrets, masks[p])
@@ -205,7 +215,7 @@ class DeepCFRTrainer:
                 if p == traverser:
                     # Exploration: epsilon-greedy with uniform over legal actions
                     eps = self.explore_epsilon
-                    explore_probs = masks[p].astype(np.float64) / max(1, masks[p].sum())
+                    explore_probs = masks[p].astype(np.float32) / max(1, masks[p].sum())
                     mixed = (1 - eps) * strategies[p] + eps * explore_probs
                     # Renormalize
                     mixed_legal = mixed[legal]
@@ -294,7 +304,7 @@ class DeepCFRTrainer:
 
         # Use value network for non-terminal
         obs = build_observation(state, traverser, tracker)
-        with torch.no_grad():
+        with torch.inference_mode():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
             return self.value_net(obs_t).item()
 
@@ -334,24 +344,21 @@ class DeepCFRTrainer:
             sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
             self.regret_buffer.add(obs, sparse_regret, self.iteration)
 
-            # Store strategy sample (weighted by iteration for averaging)
-            self.strategy_buffer.add(obs, strategy, self.iteration)
+            # Store strategy sample as sparse format
+            nonzero_strats = np.nonzero(strategy)[0]
+            sparse_strat = np.zeros((len(nonzero_strats), 2), dtype=np.float32)
+            sparse_strat[:, 0] = nonzero_strats
+            sparse_strat[:, 1] = strategy[nonzero_strats]
+            self.strategy_buffer.add(obs, sparse_strat, self.iteration)
 
-            # Color symmetry augmentation
+            # Color symmetry augmentation (sparse-optimized: O(1) per perm)
             if self.num_augments > 0 and random.random() < 0.5:
-                # Build full regret vector only for augmentation (temporary)
-                regret_target = np.zeros(NUM_ACTIONS, dtype=np.float32)
-                regret_target[chosen_action] = regret_value
-                aug_pairs = augment_sample(
-                    obs, regret_target, ACTION_TABLE, self.num_augments
+                aug_triples = augment_sample_sparse(
+                    obs, chosen_action, regret_value, ACTION_TABLE, self.num_augments
                 )
-                for aug_obs, aug_regrets in aug_pairs:
-                    # Find the single non-zero action in augmented regrets
-                    nonzero = np.nonzero(aug_regrets)[0]
-                    if len(nonzero) > 0:
-                        aug_aid = nonzero[0]
-                        aug_sparse = np.array([aug_aid, aug_regrets[aug_aid]], dtype=np.float32)
-                        self.regret_buffer.add(aug_obs, aug_sparse, self.iteration)
+                for aug_obs, aug_aid, aug_val in aug_triples:
+                    aug_sparse = np.array([aug_aid, aug_val], dtype=np.float32)
+                    self.regret_buffer.add(aug_obs, aug_sparse, self.iteration)
 
     # ============================================================
     # Network Training
@@ -602,7 +609,7 @@ class DeepCFRTrainer:
         self, obs: np.ndarray, legal_mask: np.ndarray,
         temperature: float = 0.5,
     ) -> int:
-        with torch.no_grad():
+        with torch.inference_mode():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
             logits = self.strategy_net(obs_t).cpu().numpy()[0]
         probs = masked_softmax(logits, legal_mask, temperature)
