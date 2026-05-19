@@ -90,7 +90,7 @@ python -m cfr_ai.ai.train
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `--iterations` | 100 | CFR反復回数 |
+| `--iterations` | 1000 | CFR反復回数 |
 | `--traversals` | 500 | 1反復あたりの自己対戦回数 |
 | `--hidden` | 128 | NN隠れ層の次元数 |
 | `--lr` | 0.001 | 学習率 |

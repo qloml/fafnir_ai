@@ -5,7 +5,7 @@ Usage:
     python -m cfr_ai.ai.train [options]
 
 Options:
-    --iterations N       Number of CFR iterations (default: 100)
+    --iterations N       Number of CFR iterations (default: 1000)
     --traversals N       Traversals per iteration (default: 200)
     --hidden N           Hidden layer size (default: 256)
     --lr FLOAT           Learning rate (default: 1e-3)
@@ -28,7 +28,7 @@ from .trainer import DeepCFRTrainer
 
 def main():
     parser = argparse.ArgumentParser(description="Deep CFR Training for Fafnir")
-    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--traversals", type=int, default=300)
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
