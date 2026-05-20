@@ -28,12 +28,12 @@ from .game_engine import NUM_COLORS, ALL_COLORS, COLOR_TO_IDX
 # Action Enumeration
 # ============================================================
 # Bid limits (NN output size):
-#   max_total = 8 : covers the vast majority of practical bids
-#   max_per_color = 8 : sufficient for any single-color bid
+#   max_total = 6 : covers practical bids (合計6個まで)
+#   max_per_color = 6 : sufficient for any single-color bid
 #   Rare larger bids are handled by clip_bid_to_range()
-#   This gives 3,003 actions (vs 54,264 with max=15), ~18x memory reduction
-MAX_PER_COLOR_BID = 8
-MAX_TOTAL_BID = 8
+#   This gives 462 actions (vs 3,003 with max=8)
+MAX_PER_COLOR_BID = 6
+MAX_TOTAL_BID = 6
 
 
 def _build_action_table(max_total: int, max_per_color: int) -> List[Tuple[int, ...]]:

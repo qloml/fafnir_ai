@@ -48,8 +48,8 @@ from .symmetry import augment_sample, augment_sample_sparse
 class ReservoirBuffer:
     """Reservoir sampling buffer for Deep CFR.
     
-    legal_mask is NOT stored; it is reconstructed from obs at sample time
-    to save ~12KB per sample (3003 floats * 4 bytes).
+    Linear CFR: サンプル時にイテレーション番号で重み付けし、
+    新しいデータを優先的に学習する。
     """
 
     def __init__(self, capacity: int = 2_000_000):
@@ -70,8 +70,21 @@ class ReservoirBuffer:
             if idx < self.capacity:
                 self.buffer[idx] = (obs, target, iteration)
 
-    def sample(self, batch_size: int, num_actions: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        indices = random.sample(range(len(self.buffer)), min(batch_size, len(self.buffer)))
+    def sample(self, batch_size: int, num_actions: int = 0, current_iteration: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        n = min(batch_size, len(self.buffer))
+
+        # Linear CFR: weight samples by (iteration / current_iteration)^1.5
+        if current_iteration > 1:
+            weights = np.array(
+                [max(1, self.buffer[i][2]) / current_iteration for i in range(len(self.buffer))],
+                dtype=np.float64,
+            )
+            weights = weights ** 1.5
+            weights /= weights.sum()
+            indices = np.random.choice(len(self.buffer), size=n, replace=False, p=weights).tolist()
+        else:
+            indices = random.sample(range(len(self.buffer)), n)
+
         obs = np.stack([self.buffer[i][0] for i in indices])
         # Reconstruct dense targets from sparse (action_id, value) pairs
         if self._sparse_target and num_actions > 0:
@@ -161,6 +174,10 @@ class DeepCFRTrainer:
         # Stats
         self.iteration = 0
         self.total_traversals = 0
+
+        # Baseline EMA for variance reduction
+        self._baseline = 0.0
+        self._baseline_alpha = 0.01  # EMA smoothing factor
 
         # Multiprocessing pool (lazy-init)
         self._pool = None
@@ -286,6 +303,8 @@ class DeepCFRTrainer:
             decision_points, traverser, terminal_value
         )
 
+        # Update baseline EMA
+        self._baseline += self._baseline_alpha * (terminal_value - self._baseline)
 
         return terminal_value
 
@@ -319,16 +338,8 @@ class DeepCFRTrainer:
         """
         Process decision points to compute regret estimates.
         
-        Using the outcome sampling formula:
-        For the traverser's action a_t chosen with probability q(a_t):
-          regret(a) = (utility(a) - utility(a_t)) / q(a_t)
-        
-        Since we only sampled one action, we estimate:
-          - utility(a_t) = terminal_value (the outcome we observed)
-          - utility(a) ≈ terminal_value for a == a_t, else estimated by value net
-        
-        Simplified approach: we store the terminal value as a baseline
-        and let the regret network learn relative action values.
+        Baseline subtraction で分散を低減:
+          regret_value = (terminal_value - baseline) * weight
         """
         for dp in decision_points:
             obs = dp['obs'][traverser]
@@ -337,10 +348,9 @@ class DeepCFRTrainer:
             chosen_action = dp['actions'][traverser]
             sample_prob = dp['sample_probs'][traverser]
 
-            # Construct sparse regret target: only the chosen action has a value
-            # Weight by inverse sampling probability for importance correction
+            # Importance weight with baseline subtraction
             weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
-            regret_value = terminal_value * weight
+            regret_value = (terminal_value - self._baseline) * weight
 
             # Store regret sample as sparse (action_id, value) pair
             sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
@@ -372,7 +382,7 @@ class DeepCFRTrainer:
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.regret_buffer) // self.batch_size)
         for _ in range(steps):
-            obs, targets, masks = self.regret_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS)
+            obs, targets, masks = self.regret_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)
@@ -393,7 +403,7 @@ class DeepCFRTrainer:
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.strategy_buffer) // self.batch_size)
         for _ in range(steps):
-            obs, targets, masks = self.strategy_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS)
+            obs, targets, masks = self.strategy_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)
@@ -508,6 +518,7 @@ class DeepCFRTrainer:
             work_items.append((
                 n, offset, self.iteration,
                 self.max_depth, self.num_augments, self.explore_epsilon,
+                self._baseline,
                 regret_sd, value_sd,
             ))
             offset += n

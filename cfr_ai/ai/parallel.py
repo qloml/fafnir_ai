@@ -70,6 +70,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     """
     (num_traversals, start_traversal_id, iteration,
      max_depth, num_augments, explore_epsilon,
+     baseline,
      regret_sd, value_sd) = args
 
     # Load updated weights for this iteration
@@ -86,7 +87,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     for i in range(num_traversals):
         traverser = (start_traversal_id + i) % 2
         value, r_samps, s_samps, v_samps = _single_traverse(
-            traverser, iteration, max_depth, num_augments, explore_epsilon
+            traverser, iteration, max_depth, num_augments, explore_epsilon, baseline
         )
         total_value += value
         regret_samples.extend(r_samps)
@@ -108,6 +109,7 @@ def _single_traverse(
     max_depth: int,
     num_augments: int,
     explore_epsilon: float,
+    baseline: float = 0.0,
 ) -> Tuple[float, list, list, list]:
     """
     Run a single game traversal. Same logic as DeepCFRTrainer.traverse_game
@@ -200,7 +202,7 @@ def _single_traverse(
 
     # Process decision points
     regret_samples, strategy_samples = _process_decision_points(
-        decision_points, traverser, terminal_value, iteration, num_augments
+        decision_points, traverser, terminal_value, iteration, num_augments, baseline
     )
 
     value_samples = []
@@ -230,8 +232,9 @@ def _process_decision_points(
     terminal_value: float,
     iteration: int,
     num_augments: int,
+    baseline: float = 0.0,
 ) -> Tuple[list, list]:
-    """Returns (regret_samples, strategy_samples)."""
+    """Returns (regret_samples, strategy_samples). Baseline subtraction で分散低減。"""
     regret_samples = []
     strategy_samples = []
 
@@ -243,7 +246,7 @@ def _process_decision_points(
         sample_prob = dp['sample_probs'][traverser]
 
         weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
-        regret_value = terminal_value * weight
+        regret_value = (terminal_value - baseline) * weight
 
         # Store sparse regret (action_id, value)
         sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
