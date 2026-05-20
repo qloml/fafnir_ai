@@ -34,10 +34,12 @@ def main():
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--train-steps", type=int, default=500)
+    parser.add_argument("--train-steps", type=int, default=200)
     parser.add_argument("--max-depth", type=int, default=25,
                         help="Max depth per traversal (1 round is typically 10-20 turns)")
     parser.add_argument("--augments", type=int, default=3)
+    parser.add_argument("--buffer-capacity", type=int, default=500_000,
+                        help="Reservoir buffer capacity per network")
     parser.add_argument("--save-dir", type=str, default="cfr_ai/ai/checkpoints")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--device", type=str, default="auto")
@@ -47,15 +49,16 @@ def main():
                         help="Parallel workers (0=auto, 1=single-process)")
     args = parser.parse_args()
 
-    # Auto-detect workers: use CPU cores - 1 (leave 1 for main process)
+    # Auto-detect workers: cap at 4 to limit memory usage
     if args.workers <= 0:
         cpu_count = os.cpu_count() or 4
-        args.workers = max(1, cpu_count - 1)
+        args.workers = min(4, max(1, cpu_count - 1))
         print(f"[DeepCFR] Auto-detected {cpu_count} CPU cores, using {args.workers} workers")
 
     trainer = DeepCFRTrainer(
         hidden_dim=args.hidden,
         lr=args.lr,
+        buffer_capacity=args.buffer_capacity,
         batch_size=args.batch_size,
         train_steps_per_iter=args.train_steps,
         max_depth=args.max_depth,
