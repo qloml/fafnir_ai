@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--save-every", type=int, default=20,
                         help="Save checkpoint every N iterations")
-    parser.add_argument("--workers", type=int, default=0,
+    parser.add_argument("--workers", type=int, default=1,
                         help="Parallel workers (0=auto, 1=single-process)")
     args = parser.parse_args()
 
