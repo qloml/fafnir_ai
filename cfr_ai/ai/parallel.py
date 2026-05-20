@@ -116,10 +116,12 @@ def _single_traverse(
     state = new_game()
     tracker = BidTracker()
     depth = 0
+    initial_round = state.round_num
+    initial_scores = state.scores[:]
 
     decision_points = []
 
-    while state.phase == "BIDDING" and depth < max_depth:
+    while state.phase == "BIDDING" and depth < max_depth and state.round_num == initial_round:
         obs = [None, None]
         masks = [None, None]
         strategies = [None, None]
@@ -194,37 +196,32 @@ def _single_traverse(
         depth += 1
 
     # Terminal value
-    terminal_value = _compute_terminal_value(state, traverser, tracker)
+    terminal_value = _compute_terminal_value(state, traverser, initial_round, initial_scores)
 
     # Process decision points
     regret_samples, strategy_samples = _process_decision_points(
         decision_points, traverser, terminal_value, iteration, num_augments
     )
 
-    # Value sample
     value_samples = []
-    if len(decision_points) > 0:
-        dp = decision_points[0]
-        obs_init = dp['obs'][traverser]
-        val_target = np.array([terminal_value], dtype=np.float32)
-        value_samples.append((obs_init, val_target, iteration))
 
     return terminal_value, regret_samples, strategy_samples, value_samples
 
 
 def _compute_terminal_value(
-    state: FafnirState, traverser: int, tracker: BidTracker
+    state: FafnirState, traverser: int,
+    initial_round: int, initial_scores: list,
 ) -> float:
-    if state.phase == "GAME_END":
-        score_diff = state.scores[traverser] - state.scores[1 - traverser]
-        # Fafnirの想定スコア差（最大50程度）で割り、-1.0〜1.0に収める
-        reward = score_diff / 50.0
-        return max(-1.0, min(1.0, float(reward)))
-
-    obs = build_observation(state, traverser, tracker)
-    with torch.inference_mode():
-        obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-        return _w_value_net(obs_t).item()
+    """1ラウンド分のスコア差を報酬として返す。"""
+    if state.round_num > initial_round or state.phase == "GAME_END":
+        gained = (state.scores[traverser] - initial_scores[traverser]) - \
+                 (state.scores[1 - traverser] - initial_scores[1 - traverser])
+    else:
+        auction_diff = (state.scores[traverser] - initial_scores[traverser]) - \
+                       (state.scores[1 - traverser] - initial_scores[1 - traverser])
+        hand_diff = compute_hand_score(state, traverser) - compute_hand_score(state, 1 - traverser)
+        gained = auction_diff + hand_diff
+    return max(-1.0, min(1.0, gained / 40.0))
 
 
 def _process_decision_points(
