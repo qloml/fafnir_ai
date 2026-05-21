@@ -34,11 +34,11 @@ def main():
     parser.add_argument("--hidden", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--train-steps", type=int, default=200)
+    parser.add_argument("--train-steps", type=int, default=100)
     parser.add_argument("--max-depth", type=int, default=50,
                         help="Max depth per traversal (1 round is typically 10-25 turns)")
-    parser.add_argument("--augments", type=int, default=3)
-    parser.add_argument("--buffer-capacity", type=int, default=500_000,
+    parser.add_argument("--augments", type=int, default=1)
+    parser.add_argument("--buffer-capacity", type=int, default=200_000,
                         help="Reservoir buffer capacity per network")
     parser.add_argument("--save-dir", type=str, default="cfr_ai/ai/checkpoints")
     parser.add_argument("--resume", action="store_true")
