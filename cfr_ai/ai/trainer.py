@@ -1,4 +1,4 @@
-"""
+﻿"""
 Deep CFR Trainer for Fafnir (v2).
 
 Major improvements over v1:
@@ -24,6 +24,7 @@ Architecture:
 - Color symmetry data augmentation
 """
 import os
+import sys
 import time
 import random
 import multiprocessing as mp
@@ -427,44 +428,53 @@ class DeepCFRTrainer:
         self, state: FafnirState, traverser: int,
         initial_round: int, initial_scores: list,
     ) -> float:
-        """勝利確率の変化を報酬として返す。
+        """スコア状況に適応した報酬を返す。
 
-        ゲーム全体での「勝利確率の変化」を報酬に使うことで、
-        スコア状況に応じた適切な報酬を自然に計算する:
-        - 接戦(990 vs 990)での+10点 → 報酬大（勝敗を決定する）
-        - 大差(100 vs 990)での+10点 → 報酬小（ほぼ影響なし）
-        - 初期(0 vs 0)での+10点     → 報酬中（raw scoreで補完）
+        このゲームでは「石の得点」（手札スコア）がオークション勝ちよりも
+        はるかに大きい（オークション勝ち=+1, 石の得点=最大+30以上）。
+        そのため石集め戦略の良し悪しが報酬に正しく反映される必要がある。
 
-        raw score diff も混合して、(0,0) ゲームでも
-        十分な学習シグナルを確保する。
+        報酬設計:
+        - (0,0)ゲーム（50%）: 純粋なスコア差を報酬に使う
+          → 石の得点差がそのまま学習シグナルになる
+        - スコアランダム化ゲーム（50%）: 勝利確率の変化を混合
+          → ゲーム文脈（リード時は安全、ビハインド時は攻撃的）を学習
+
+        正規化: /50 (手札スコア差が±40に達し得るため)
         """
         opp = 1 - traverser
 
-        # 最終的なスコアを決定（手札スコアの扱いがケースで異なる）
+        # 最終的なスコアを決定
         if state.round_num > initial_round:
-            # ケース1: ラウンド完了 — do_round_end()で手札スコア加算済み
+            # ラウンド完了 — do_round_end()で手札スコア加算済み
             final_t = state.scores[traverser]
             final_o = state.scores[opp]
         else:
-            # ケース2,3: GAME_END or 深度制限 — 手札スコアを手動加算
+            # GAME_END or 深度制限 — 手札スコアを手動加算
             final_t = state.scores[traverser] + compute_hand_score(state, traverser)
             final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-        # --- 報酬1: Raw score difference (学習安定性のための基本シグナル) ---
+        # --- 報酬1: Raw score difference ---
+        # 石の得点が大きいため、正規化を /50 に設定
+        # 典型的な1ラウンド: オークション差 ±10 + 手札差 ±30 = ±40
         gained = (final_t - initial_scores[traverser]) - \
                  (final_o - initial_scores[opp])
-        raw_value = gained / 30.0
+        raw_value = gained / 50.0
 
-        # --- 報酬2: 勝利確率の変化 (ゲームレベルの価値) ---
+        # --- 報酬2: 勝利確率の変化 ---
         prob_before = self._win_probability(
             initial_scores[traverser], initial_scores[opp])
         prob_after = self._win_probability(final_t, final_o)
         wp_delta = (prob_after - prob_before) * 5.0
 
-        # --- 混合: raw(安定) + wp(ゲーム文脈) ---
-        # (0,0)ゲーム: wpが極小 → rawが支配的 → 安定した学習シグナル
-        # 高スコアゲーム: wpが大きい → ゲーム文脈が反映される
-        terminal_value = raw_value * 0.3 + wp_delta * 0.7
+        # --- 適応的混合 ---
+        # (0,0)ゲーム → rawのみ（石の得点差が直接報酬に）
+        # スコアが高いほど → wp成分を増やす（ゲーム終盤の文脈を重視）
+        max_init = max(initial_scores[0], initial_scores[1])
+        wp_weight = min(0.7, max_init / 500.0)  # 0→0: wp=0, 500+: wp=0.7
+        raw_weight = 1.0 - wp_weight
+
+        terminal_value = raw_weight * raw_value + wp_weight * wp_delta
 
         return max(-1.0, min(1.0, terminal_value))
 
@@ -659,13 +669,17 @@ class DeepCFRTrainer:
         train_time = time.time() - t1
 
         eps = self._get_epsilon()
+        mem_str = ""
+        if self.iteration % 10 == 0:
+            mem_mb = self._estimate_memory_mb()
+            mem_str = f" Mem~{mem_mb:.0f}MB"
         print(
             f"[DeepCFR v2] Iter={self.iteration} | "
             f"Trav={self.total_traversals} AvgV={avg_value:.3f} | "
             f"Buf: R={len(self.regret_buffer)} S={len(self.strategy_buffer)} V={len(self.value_buffer)} | "
             f"Loss: R={rl:.4f} S={sl:.4f} V={vl:.4f} | "
             f"ε={eps:.3f} | "
-            f"T={traverse_time:.1f}s Tr={train_time:.1f}s"
+            f"T={traverse_time:.1f}s Tr={train_time:.1f}s{mem_str}"
         )
         return {'regret_loss': rl, 'strategy_loss': sl, 'value_loss': vl}
 
@@ -746,13 +760,17 @@ class DeepCFRTrainer:
         vl = self.train_value_network()
         train_time = time.time() - t1
 
+        mem_str = ""
+        if self.iteration % 10 == 0:
+            mem_mb = self._estimate_memory_mb()
+            mem_str = f" Mem~{mem_mb:.0f}MB"
         print(
             f"[DeepCFR v2] Iter={self.iteration} | "
             f"Trav={self.total_traversals} AvgV={avg_value:.3f} | "
             f"Buf: R={len(self.regret_buffer)} S={len(self.strategy_buffer)} V={len(self.value_buffer)} | "
             f"Loss: R={rl:.4f} S={sl:.4f} V={vl:.4f} | "
             f"ε={epsilon:.3f} | "
-            f"T={traverse_time:.1f}s Tr={train_time:.1f}s [{self.num_workers}w]"
+            f"T={traverse_time:.1f}s Tr={train_time:.1f}s [{self.num_workers}w]{mem_str}"
         )
         return {'regret_loss': rl, 'strategy_loss': sl, 'value_loss': vl}
 
@@ -762,6 +780,20 @@ class DeepCFRTrainer:
             self._pool.terminate()
             self._pool.join()
             self._pool = None
+
+    def _estimate_memory_mb(self) -> float:
+        """バッファのおおよそのメモリ使用量をMB単位で推定。"""
+        total_bytes = 0
+        for buf in [self.regret_buffer, self.strategy_buffer, self.value_buffer]:
+            for item in buf.buffer[:100]:  # サンプリングで推定
+                total_bytes += item[0].nbytes  # obs
+                total_bytes += item[1].nbytes if hasattr(item[1], 'nbytes') else 8  # target
+                total_bytes += 8  # iteration int
+                total_bytes += 120  # Python object overhead
+            if len(buf.buffer) > 100:
+                avg = total_bytes / 100
+                total_bytes = int(avg * len(buf.buffer))
+        return total_bytes / (1024 * 1024)
 
     # ============================================================
     # Save / Load
@@ -833,3 +865,4 @@ class DeepCFRTrainer:
         lp = probs[legal]
         lp = lp / (lp.sum() + 1e-10)
         return int(np.random.choice(legal, p=lp))
+
