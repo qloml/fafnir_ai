@@ -252,10 +252,9 @@ def _compute_terminal_value(
     state: FafnirState, traverser: int,
     initial_round: int, initial_scores: list,
 ) -> float:
-    """スコア状況に適応した報酬（石の得点が大きいゲーム向け）。"""
+    """1ラウンドでの獲得スコア差を報酬として返す。"""
     opp = 1 - traverser
 
-    # 最終スコア決定
     if state.round_num > initial_round:
         final_t = state.scores[traverser]
         final_o = state.scores[opp]
@@ -263,24 +262,10 @@ def _compute_terminal_value(
         final_t = state.scores[traverser] + compute_hand_score(state, traverser)
         final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-    # Raw score difference (石の得点を含む、/50で正規化)
     gained = (final_t - initial_scores[traverser]) - \
              (final_o - initial_scores[opp])
-    raw_value = gained / 50.0
 
-    # Win probability change
-    prob_before = _win_probability(initial_scores[traverser], initial_scores[opp])
-    prob_after = _win_probability(final_t, final_o)
-    wp_delta = (prob_after - prob_before) * 5.0
-
-    # 適応的混合: (0,0)→raw only, 高スコア→wp混合
-    max_init = max(initial_scores[0], initial_scores[1])
-    wp_weight = min(0.7, max_init / 500.0)
-    raw_weight = 1.0 - wp_weight
-
-    terminal_value = raw_weight * raw_value + wp_weight * wp_delta
-
-    return max(-1.0, min(1.0, terminal_value))
+    return max(-1.0, min(1.0, gained / 50.0))
 
 
 def _process_decision_points(

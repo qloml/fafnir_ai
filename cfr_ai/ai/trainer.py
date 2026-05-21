@@ -1,4 +1,4 @@
-﻿"""
+"""
 Deep CFR Trainer for Fafnir (v2).
 
 Major improvements over v1:
@@ -428,19 +428,13 @@ class DeepCFRTrainer:
         self, state: FafnirState, traverser: int,
         initial_round: int, initial_scores: list,
     ) -> float:
-        """スコア状況に適応した報酬を返す。
+        """1ラウンドでの獲得スコア差を報酬として返す。
 
-        このゲームでは「石の得点」（手札スコア）がオークション勝ちよりも
-        はるかに大きい（オークション勝ち=+1, 石の得点=最大+30以上）。
-        そのため石集め戦略の良し悪しが報酬に正しく反映される必要がある。
+        報酬 = (自分のラウンド獲得点 - 相手のラウンド獲得点) / 正規化係数
 
-        報酬設計:
-        - (0,0)ゲーム（50%）: 純粋なスコア差を報酬に使う
-          → 石の得点差がそのまま学習シグナルになる
-        - スコアランダム化ゲーム（50%）: 勝利確率の変化を混合
-          → ゲーム文脈（リード時は安全、ビハインド時は攻撃的）を学習
-
-        正規化: /50 (手札スコア差が±40に達し得るため)
+        このゲームではオークション勝ち(+1)よりも石の得点(手札スコア)の
+        方がはるかに大きいため、手札スコアを含めた総合スコア差を使う。
+        正規化係数50: 典型的なラウンドスコア差(±40)を[-1, 1]に収める。
         """
         opp = 1 - traverser
 
@@ -454,29 +448,11 @@ class DeepCFRTrainer:
             final_t = state.scores[traverser] + compute_hand_score(state, traverser)
             final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-        # --- 報酬1: Raw score difference ---
-        # 石の得点が大きいため、正規化を /50 に設定
-        # 典型的な1ラウンド: オークション差 ±10 + 手札差 ±30 = ±40
+        # ラウンドスコア差
         gained = (final_t - initial_scores[traverser]) - \
                  (final_o - initial_scores[opp])
-        raw_value = gained / 50.0
 
-        # --- 報酬2: 勝利確率の変化 ---
-        prob_before = self._win_probability(
-            initial_scores[traverser], initial_scores[opp])
-        prob_after = self._win_probability(final_t, final_o)
-        wp_delta = (prob_after - prob_before) * 5.0
-
-        # --- 適応的混合 ---
-        # (0,0)ゲーム → rawのみ（石の得点差が直接報酬に）
-        # スコアが高いほど → wp成分を増やす（ゲーム終盤の文脈を重視）
-        max_init = max(initial_scores[0], initial_scores[1])
-        wp_weight = min(0.7, max_init / 500.0)  # 0→0: wp=0, 500+: wp=0.7
-        raw_weight = 1.0 - wp_weight
-
-        terminal_value = raw_weight * raw_value + wp_weight * wp_delta
-
-        return max(-1.0, min(1.0, terminal_value))
+        return max(-1.0, min(1.0, gained / 50.0))
 
     def _process_decision_points(
         self,
