@@ -70,49 +70,57 @@ class ReservoirBuffer:
             if idx < self.capacity:
                 self.buffer[idx] = (obs, target, iteration)
 
-    def sample(self, batch_size: int, num_actions: int = 0, current_iteration: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        n = min(batch_size, len(self.buffer))
+    def sample_batches(self, batch_size: int, num_batches: int, num_actions: int = 0, current_iteration: int = 0):
+        total_samples = batch_size * num_batches
+        n_avail = len(self.buffer)
+        if n_avail == 0 or total_samples == 0:
+            return
 
-        # Linear CFR: weight samples by (iteration / current_iteration)^1.5
+        # 1回だけ重みを計算し、全バッチ分のインデックスを一括サンプリング
         if current_iteration > 1:
-            weights = np.array(
-                [max(1, self.buffer[i][2]) / current_iteration for i in range(len(self.buffer))],
-                dtype=np.float64,
-            )
-            weights = weights ** 1.5
+            iters = np.fromiter((b[2] for b in self.buffer), dtype=np.float64, count=n_avail)
+            np.clip(iters, 1, None, out=iters)
+            iters /= current_iteration
+            weights = iters ** 1.5
             weights /= weights.sum()
-            indices = np.random.choice(len(self.buffer), size=n, replace=False, p=weights).tolist()
+            # ニューラルネット学習用には replace=True の方が高速で十分
+            all_indices = np.random.choice(n_avail, size=total_samples, replace=True, p=weights)
         else:
-            indices = random.sample(range(len(self.buffer)), n)
+            all_indices = np.random.randint(0, n_avail, size=total_samples)
 
-        obs = np.stack([self.buffer[i][0] for i in indices])
-        # Reconstruct dense targets from sparse (action_id, value) pairs
-        if self._sparse_target and num_actions > 0:
-            targets = np.zeros((len(indices), num_actions), dtype=np.float32)
-            for j, i in enumerate(indices):
-                sparse = self.buffer[i][1]  # [action_id, value]
-                targets[j, int(sparse[0])] = sparse[1]
-        elif getattr(self, '_sparse_strategy', False) and num_actions > 0:
-            targets = np.zeros((len(indices), num_actions), dtype=np.float32)
-            for j, i in enumerate(indices):
-                sparse = self.buffer[i][1]  # [[act_id, prob], ...]
-                if len(sparse) > 0:
-                    act_ids = sparse[:, 0].astype(int)
-                    probs = sparse[:, 1]
-                    targets[j, act_ids] = probs
-        else:
-            targets = np.stack([self.buffer[i][1] for i in indices])
-        # Reconstruct legal masks from obs (hand=obs[0:6], offer=obs[6:12])
-        if self._needs_mask and num_actions > 1:
-            masks = np.stack([
-                get_legal_mask(
-                    self.buffer[i][0][:6].astype(int).tolist(),
-                    self.buffer[i][0][6:12].astype(int).tolist(),
-                ) for i in indices
-            ])
-        else:
-            masks = np.ones((len(indices), 1), dtype=np.float32)
-        return obs, targets, masks
+        for i in range(num_batches):
+            indices = all_indices[i * batch_size : (i + 1) * batch_size]
+            obs = np.stack([self.buffer[idx][0] for idx in indices])
+            
+            # Reconstruct dense targets from sparse
+            if self._sparse_target and num_actions > 0:
+                targets = np.zeros((len(indices), num_actions), dtype=np.float32)
+                for j, idx in enumerate(indices):
+                    sparse = self.buffer[idx][1]
+                    targets[j, int(sparse[0])] = sparse[1]
+            elif getattr(self, '_sparse_strategy', False) and num_actions > 0:
+                targets = np.zeros((len(indices), num_actions), dtype=np.float32)
+                for j, idx in enumerate(indices):
+                    sparse = self.buffer[idx][1]
+                    if len(sparse) > 0:
+                        act_ids = sparse[:, 0].astype(int)
+                        probs = sparse[:, 1]
+                        targets[j, act_ids] = probs
+            else:
+                targets = np.stack([self.buffer[idx][1] for idx in indices])
+                
+            # Reconstruct legal masks
+            if self._needs_mask and num_actions > 1:
+                masks = np.stack([
+                    get_legal_mask(
+                        self.buffer[idx][0][:6].astype(int).tolist(),
+                        self.buffer[idx][0][6:12].astype(int).tolist(),
+                    ) for idx in indices
+                ])
+            else:
+                masks = np.ones((len(indices), 1), dtype=np.float32)
+                
+            yield obs, targets, masks
 
     def __len__(self):
         return len(self.buffer)
@@ -132,7 +140,7 @@ class DeepCFRTrainer:
         train_steps_per_iter: int = 500,
         max_depth: int = 40,
         num_augments: int = 2,
-        explore_epsilon: float = 0.6,
+        explore_epsilon: float = 0.2,
         device: str = "auto",
         save_dir: str = "cfr_ai/ai/checkpoints",
         num_workers: int = 1,
@@ -232,6 +240,14 @@ class DeepCFRTrainer:
                     continue
 
                 if p == traverser:
+                    # Regret-based pruning: skip clearly bad actions
+                    if self.iteration > 30 and len(legal) > 2:
+                        regret_vals = regrets[legal]
+                        max_r = regret_vals.max()
+                        keep = regret_vals >= max_r - 1.0
+                        if keep.sum() >= 2:
+                            legal = legal[keep]
+
                     # Exploration: epsilon-greedy with uniform over legal actions
                     eps = self.explore_epsilon
                     explore_probs = masks[p].astype(np.float32) / max(1, masks[p].sum())
@@ -327,7 +343,7 @@ class DeepCFRTrainer:
                            (state.scores[1 - traverser] - initial_scores[1 - traverser])
             hand_diff = compute_hand_score(state, traverser) - compute_hand_score(state, 1 - traverser)
             gained = auction_diff + hand_diff
-        return max(-1.0, min(1.0, gained / 40.0))
+        return max(-1.0, min(1.0, gained / 20.0))
 
     def _process_decision_points(
         self,
@@ -381,8 +397,11 @@ class DeepCFRTrainer:
         self.regret_net.train()
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.regret_buffer) // self.batch_size)
-        for _ in range(steps):
-            obs, targets, masks = self.regret_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
+        if steps == 0:
+            return 0.0
+            
+        batch_generator = self.regret_buffer.sample_batches(self.batch_size, steps, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
+        for obs, targets, masks in batch_generator:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)
@@ -402,8 +421,11 @@ class DeepCFRTrainer:
         self.strategy_net.train()
         total_loss = 0.0
         steps = min(self.train_steps_per_iter, len(self.strategy_buffer) // self.batch_size)
-        for _ in range(steps):
-            obs, targets, masks = self.strategy_buffer.sample(self.batch_size, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
+        if steps == 0:
+            return 0.0
+            
+        batch_generator = self.strategy_buffer.sample_batches(self.batch_size, steps, num_actions=NUM_ACTIONS, current_iteration=self.iteration)
+        for obs, targets, masks in batch_generator:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             targets_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
             masks_t = torch.tensor(masks, dtype=torch.float32, device=self.device)
@@ -425,8 +447,11 @@ class DeepCFRTrainer:
         self.value_net.train()
         total_loss = 0.0
         steps = min(self.train_steps_per_iter // 2, len(self.value_buffer) // self.batch_size)
-        for _ in range(steps):
-            obs, targets, _ = self.value_buffer.sample(self.batch_size)
+        if steps == 0:
+            return 0.0
+            
+        batch_generator = self.value_buffer.sample_batches(self.batch_size, steps, current_iteration=self.iteration)
+        for obs, targets, _ in batch_generator:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device)
             values_t = torch.tensor(targets[:, 0], dtype=torch.float32, device=self.device)
             pred = self.value_net(obs_t)

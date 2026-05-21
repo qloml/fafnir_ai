@@ -128,14 +128,16 @@ def _single_traverse(
         masks = [None, None]
         strategies = [None, None]
 
+        regrets_per_player = [None, None]
+
         for p in range(2):
             obs[p] = build_observation(state, p, tracker)
             masks[p] = get_legal_mask(state.hand[p], state.offer)
 
             with torch.inference_mode():
                 obs_t = torch.tensor(obs[p], dtype=torch.float32).unsqueeze(0)
-                regrets = _w_regret_net(obs_t).numpy()[0]
-            strategies[p] = regret_matching(regrets, masks[p])
+                regrets_per_player[p] = _w_regret_net(obs_t).numpy()[0]
+            strategies[p] = regret_matching(regrets_per_player[p], masks[p])
 
         actions = [0, 0]
         sample_probs = [1.0, 1.0]
@@ -147,6 +149,14 @@ def _single_traverse(
                 continue
 
             if p == traverser:
+                # Regret-based pruning: skip clearly bad actions
+                if iteration > 30 and len(legal) > 2:
+                    regret_vals = regrets_per_player[traverser][legal]
+                    max_r = regret_vals.max()
+                    keep = regret_vals >= max_r - 1.0
+                    if keep.sum() >= 2:
+                        legal = legal[keep]
+
                 eps = explore_epsilon
                 explore_probs = masks[p].astype(np.float32) / max(1, masks[p].sum())
                 mixed = (1 - eps) * strategies[p] + eps * explore_probs
@@ -223,7 +233,7 @@ def _compute_terminal_value(
                        (state.scores[1 - traverser] - initial_scores[1 - traverser])
         hand_diff = compute_hand_score(state, traverser) - compute_hand_score(state, 1 - traverser)
         gained = auction_diff + hand_diff
-    return max(-1.0, min(1.0, gained / 40.0))
+    return max(-1.0, min(1.0, gained / 20.0))
 
 
 def _process_decision_points(
