@@ -24,7 +24,7 @@ from cfr_ai.ai.action_space import (
     NUM_ACTIONS, get_legal_mask, action_id_to_stones, action_id_to_counts,
     PASS_ACTION_ID, ACTION_TABLE,
 )
-from cfr_ai.ai.observation import BidTracker, build_observation_from_server_state, NUM_COLORS
+from cfr_ai.ai.observation import BidTracker, build_observation_from_server_state, NUM_COLORS, OBS_DIM
 from cfr_ai.ai.game_engine import COLOR_TO_IDX, ALL_COLORS
 from cfr_ai.ai.networks import StrategyNetwork, RegretNetwork, masked_softmax, regret_matching
 
@@ -374,9 +374,9 @@ async def main():
     if os.path.exists(args.checkpoint):
         print(f"[CFR] Loading checkpoint: {args.checkpoint}")
         ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        hidden_dim = ckpt.get('hidden_dim', 128)
+        hidden_dim = ckpt.get('hidden_dim', 192)
         strategy_net = StrategyNetwork(
-            obs_dim=34,
+            obs_dim=OBS_DIM,
             num_actions=NUM_ACTIONS,
             hidden=hidden_dim,
         ).to(device)

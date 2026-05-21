@@ -1,9 +1,15 @@
 """
-Parallel traversal worker for Deep CFR.
+Parallel traversal worker for Deep CFR (v2).
 
 Uses multiprocessing to distribute game traversals across CPU cores.
 Each worker initializes its network architecture once (via pool initializer),
 then receives updated weights each iteration via work arguments.
+
+v2 changes:
+- Correct regret estimation for all legal actions
+- Score randomization support
+- Adaptive exploration support
+- OBS_DIM = 42
 
 Designed for Windows (spawn-based multiprocessing).
 """
@@ -17,12 +23,12 @@ from .game_engine import (
     FafnirState, new_game, step_auction, NUM_COLORS,
     compute_hand_score, clamp_score, is_trash_limit_reached,
     should_force_round_end_by_bag, setup_offer, do_round_end,
-    resolve_auction, check_game_end,
+    resolve_auction, check_game_end, SCORE_TO_WIN,
 )
 from .action_space import (
     NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
 )
-from .observation import build_observation, BidTracker
+from .observation import build_observation, BidTracker, OBS_DIM
 from .networks import (
     RegretNetwork, StrategyNetwork, ValueNetwork,
     regret_matching,
@@ -49,10 +55,10 @@ def _worker_init(hidden_dim: int):
     # Use single thread per worker to avoid oversubscription
     torch.set_num_threads(1)
 
-    _w_regret_net = RegretNetwork(34, NUM_ACTIONS, hidden_dim)
+    _w_regret_net = RegretNetwork(OBS_DIM, NUM_ACTIONS, hidden_dim)
     _w_regret_net.eval()
 
-    _w_value_net = ValueNetwork(34, hidden_dim)
+    _w_value_net = ValueNetwork(OBS_DIM, hidden_dim)
     _w_value_net.eval()
 
 
@@ -63,6 +69,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     Args:
         args: (num_traversals, start_traversal_id, iteration,
                max_depth, num_augments, explore_epsilon,
+               baseline, score_randomize,
                regret_state_dict, value_state_dict)
 
     Returns:
@@ -70,7 +77,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     """
     (num_traversals, start_traversal_id, iteration,
      max_depth, num_augments, explore_epsilon,
-     baseline,
+     baseline, score_randomize,
      regret_sd, value_sd) = args
 
     # Load updated weights for this iteration
@@ -87,7 +94,8 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     for i in range(num_traversals):
         traverser = (start_traversal_id + i) % 2
         value, r_samps, s_samps, v_samps = _single_traverse(
-            traverser, iteration, max_depth, num_augments, explore_epsilon, baseline
+            traverser, iteration, max_depth, num_augments, explore_epsilon,
+            baseline, score_randomize
         )
         total_value += value
         regret_samples.extend(r_samps)
@@ -110,12 +118,21 @@ def _single_traverse(
     num_augments: int,
     explore_epsilon: float,
     baseline: float = 0.0,
+    score_randomize: bool = True,
 ) -> Tuple[float, list, list, list]:
     """
     Run a single game traversal. Same logic as DeepCFRTrainer.traverse_game
     but uses worker-local models and returns samples instead of storing them.
+
+    v2: Correct regret estimation + score randomization.
     """
     state = new_game()
+
+    # Score randomization
+    if score_randomize and random.random() < 0.5:
+        state.scores[0] = random.randint(0, 990)
+        state.scores[1] = random.randint(0, 990)
+
     tracker = BidTracker()
     depth = 0
     initial_round = state.round_num
@@ -210,7 +227,7 @@ def _single_traverse(
     # Terminal value
     terminal_value = _compute_terminal_value(state, traverser, initial_round, initial_scores)
 
-    # Process decision points
+    # Process decision points (v2: correct regret for all legal actions)
     regret_samples, strategy_samples = _process_decision_points(
         decision_points, traverser, terminal_value, iteration, num_augments, baseline
     )
@@ -220,20 +237,49 @@ def _single_traverse(
     return terminal_value, regret_samples, strategy_samples, value_samples
 
 
+def _win_probability(my_score: float, opp_score: float) -> float:
+    """ゲーム勝利確率の推定（残りポイント比率ベース）。"""
+    if my_score >= SCORE_TO_WIN:
+        return 1.0
+    if opp_score >= SCORE_TO_WIN:
+        return 0.0
+    my_remaining = max(1.0, SCORE_TO_WIN - my_score)
+    opp_remaining = max(1.0, SCORE_TO_WIN - opp_score)
+    return opp_remaining / (my_remaining + opp_remaining)
+
+
 def _compute_terminal_value(
     state: FafnirState, traverser: int,
     initial_round: int, initial_scores: list,
 ) -> float:
-    """1ラウンド分のスコア差を報酬として返す。"""
-    if state.round_num > initial_round or state.phase == "GAME_END":
-        gained = (state.scores[traverser] - initial_scores[traverser]) - \
-                 (state.scores[1 - traverser] - initial_scores[1 - traverser])
+    """勝利確率の変化を報酬として返す。
+    
+    raw score diff + win probability change のブレンド。
+    """
+    opp = 1 - traverser
+
+    # 最終スコア決定
+    if state.round_num > initial_round:
+        final_t = state.scores[traverser]
+        final_o = state.scores[opp]
     else:
-        auction_diff = (state.scores[traverser] - initial_scores[traverser]) - \
-                       (state.scores[1 - traverser] - initial_scores[1 - traverser])
-        hand_diff = compute_hand_score(state, traverser) - compute_hand_score(state, 1 - traverser)
-        gained = auction_diff + hand_diff
-    return max(-1.0, min(1.0, gained / 20.0))
+        final_t = state.scores[traverser] + compute_hand_score(state, traverser)
+        final_o = state.scores[opp] + compute_hand_score(state, opp)
+
+    # Raw score difference
+    gained = (final_t - initial_scores[traverser]) - \
+             (final_o - initial_scores[opp])
+    raw_value = gained / 30.0
+
+    # Win probability change
+    prob_before = _win_probability(initial_scores[traverser], initial_scores[opp])
+    prob_after = _win_probability(final_t, final_o)
+    wp_delta = (prob_after - prob_before) * 5.0
+
+    # Blend
+    terminal_value = raw_value * 0.3 + wp_delta * 0.7
+
+    return max(-1.0, min(1.0, terminal_value))
 
 
 def _process_decision_points(
@@ -244,7 +290,10 @@ def _process_decision_points(
     num_augments: int,
     baseline: float = 0.0,
 ) -> Tuple[list, list]:
-    """Returns (regret_samples, strategy_samples). Baseline subtraction で分散低減。"""
+    """Returns (regret_samples, strategy_samples).
+
+    v2: Correct regret estimation for ALL legal actions + baseline subtraction.
+    """
     regret_samples = []
     strategy_samples = []
 
@@ -256,12 +305,21 @@ def _process_decision_points(
         sample_prob = dp['sample_probs'][traverser]
 
         weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
-        regret_value = (terminal_value - baseline) * weight
+        adjusted_value = (terminal_value - baseline) * weight
 
-        # Store sparse regret (action_id, value)
-        sparse_regret = np.array([chosen_action, regret_value], dtype=np.float32)
+        # === v2: Compute regret for ALL legal actions ===
+        legal_actions = np.where(mask)[0]
+        regret_pairs = []
+        for a in legal_actions:
+            if a == chosen_action:
+                regret_a = (1.0 - strategy[a]) * adjusted_value
+            else:
+                regret_a = -strategy[a] * adjusted_value
+            regret_pairs.append([a, regret_a])
+
+        sparse_regret = np.array(regret_pairs, dtype=np.float32)
         regret_samples.append((obs, sparse_regret, iteration))
-        
+
         # Store sparse strategy
         nonzero_strats = np.nonzero(strategy)[0]
         sparse_strat = np.zeros((len(nonzero_strats), 2), dtype=np.float32)
@@ -269,13 +327,14 @@ def _process_decision_points(
         sparse_strat[:, 1] = strategy[nonzero_strats]
         strategy_samples.append((obs, sparse_strat, iteration))
 
-        # Augmentation (sparse-optimized: O(1) per perm)
+        # Augmentation (chosen action regret only, for speed)
         if num_augments > 0 and random.random() < 0.5:
+            chosen_regret = (1.0 - strategy[chosen_action]) * adjusted_value
             aug_triples = augment_sample_sparse(
-                obs, chosen_action, regret_value, ACTION_TABLE, num_augments
+                obs, chosen_action, chosen_regret, ACTION_TABLE, num_augments
             )
             for aug_obs, aug_aid, aug_val in aug_triples:
-                aug_sparse = np.array([aug_aid, aug_val], dtype=np.float32)
+                aug_sparse = np.array([[aug_aid, aug_val]], dtype=np.float32)
                 regret_samples.append((aug_obs, aug_sparse, iteration))
 
     return regret_samples, strategy_samples
