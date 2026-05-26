@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--traversals", type=int, default=1000,
                         help="Traversals per iteration (1 traversal = 1 round)")
-    parser.add_argument("--hidden", type=int, default=192)
+    parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--train-steps", type=int, default=200)

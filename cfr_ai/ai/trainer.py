@@ -157,7 +157,7 @@ class DeepCFRTrainer:
 
     def __init__(
         self,
-        hidden_dim: int = 192,
+        hidden_dim: int = 256,
         lr: float = 1e-3,
         buffer_capacity: int = 2_000_000,
         batch_size: int = 1024,
@@ -317,10 +317,11 @@ class DeepCFRTrainer:
 
                 if p == traverser:
                     # Regret-based pruning: skip clearly bad actions
-                    if self.iteration > 30 and len(legal) > 2:
+                    if self.iteration > 100 and len(legal) > 3:
                         regret_vals = regrets[legal]
                         max_r = regret_vals.max()
-                        keep = regret_vals >= max_r - 1.0
+                        threshold = max(0.0, max_r * 0.1)  # relative threshold
+                        keep = regret_vals >= threshold
                         if keep.sum() >= 2:
                             legal = legal[keep]
 
@@ -341,7 +342,7 @@ class DeepCFRTrainer:
                     actions[p] = legal[chosen_idx]
                     sample_probs[p] = strategies[p][actions[p]]
 
-            # Record decision point
+            # Record decision point (with scores snapshot for per-point values)
             decision_points.append({
                 'obs': obs,
                 'masks': masks,
@@ -349,6 +350,7 @@ class DeepCFRTrainer:
                 'actions': actions,
                 'sample_probs': sample_probs,
                 'offer_snapshot': state.offer[:],
+                'scores_before': state.scores[:],
             })
 
             # Execute auction
@@ -380,24 +382,36 @@ class DeepCFRTrainer:
                 bid_l = bid0 if loser == 0 else bid1
                 tracker.update_from_auction(winner, bid_w, bid_l, old_offer)
 
-            # Round reset clears tracker
-            if state.round_num > depth // 10 + 1:  # heuristic
-                tracker.reset()
-
             depth += 1
 
-        # Terminal value
-        terminal_value = self._compute_terminal_value(state, traverser, initial_round, initial_scores)
+        # === Dense Reward Shaping: per-decision-point effective values ===
+        opp = 1 - traverser
+        if state.round_num > initial_round:
+            # Round completed — do_round_end() already added hand scores
+            final_t = state.scores[traverser]
+            final_o = state.scores[opp]
+        else:
+            # GAME_END or depth limit — manually add hand scores
+            final_t = state.scores[traverser] + compute_hand_score(state, traverser)
+            final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-        # Now compute and store regret estimates using the outcome
+        # Each decision point sees "how much score was gained from here onward"
+        effective_values = []
+        for dp in decision_points:
+            sb = dp['scores_before']
+            gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
+            effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+
+        # Process with per-point values (replaces flat terminal_value)
         self._process_decision_points(
-            decision_points, traverser, terminal_value
+            decision_points, traverser, effective_values
         )
 
-        # Update baseline EMA
-        self._baseline += self._baseline_alpha * (terminal_value - self._baseline)
+        # Stats: first point's value = total round value
+        total_value = effective_values[0] if effective_values else 0.0
+        self._baseline += self._baseline_alpha * (total_value - self._baseline)
 
-        return terminal_value
+        return total_value
 
     # ============================================================
     # Win Probability Estimation
@@ -458,46 +472,57 @@ class DeepCFRTrainer:
         self,
         decision_points: List[Dict],
         traverser: int,
-        terminal_value: float,
+        effective_values: List[float],
     ):
         """
-        Process decision points to compute regret estimates (v2: CORRECT).
+        Process decision points to compute regret estimates (v3: Dense Reward).
 
-        v2 change: Estimate regret for ALL legal actions, not just the chosen one.
+        v3 changes over v2:
+        - Per-decision-point effective values instead of flat terminal_value.
+          Earlier decisions see "how much was gained from that point onward".
+          This solves the Credit Assignment Problem.
+        - Value Network baseline for per-point variance reduction.
+        - Increased importance weight clamping (10 → 50).
+        - Value buffer is now populated for value network training.
 
         For Outcome Sampling MCCFR, the counterfactual regret for action a at
         info set I is estimated as:
           r(I, a) = w * (u_a - v(I))
 
         Where:
-          - w = importance weight = 1 / q(z) (sampling probability of the outcome)
-          - u_a = counterfactual value of action a
-          - v(I) = expected value at info set I under current strategy
-
-        For the sampled action a*:
-          u_{a*} = terminal_value (we observed this)
-          v(I) ≈ terminal_value * σ(a*) (since we only sampled one action)
-
-        Therefore:
-          r(I, a*) = w * terminal_value * (1 - σ(a*))  [chosen action]
-          r(I, a)  = w * (-σ(a) * terminal_value)       [unchosen actions]
-
-        Baseline subtraction is applied for variance reduction.
+          - w = importance weight = 1 / q(z)
+          - u_a = counterfactual value of action a (now per-point)
+          - v(I) = baseline from value network
         """
-        for dp in decision_points:
+        for i, dp in enumerate(decision_points):
             obs = dp['obs'][traverser]
             mask = dp['masks'][traverser]
             strategy = dp['strategies'][traverser]
             chosen_action = dp['actions'][traverser]
             sample_prob = dp['sample_probs'][traverser]
 
-            # Importance weight with clamping
-            weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
+            # Per-point effective value (Dense Reward Shaping)
+            point_value = effective_values[i]
 
-            # Baseline-subtracted terminal value
-            adjusted_value = (terminal_value - self._baseline) * weight
+            # Value Network baseline (improved variance reduction)
+            with torch.inference_mode():
+                obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+                baseline = self.value_net(obs_t).cpu().item()
 
-            # === v2: Compute regret for ALL legal actions ===
+            # Store value training sample
+            self.value_buffer.add(
+                obs,
+                np.array([point_value], dtype=np.float32),
+                self.iteration,
+            )
+
+            # Importance weight with relaxed clamping (10 → 50)
+            weight = min(50.0, 1.0 / max(sample_prob, 1e-6))
+
+            # Baseline-subtracted per-point value
+            adjusted_value = (point_value - baseline) * weight
+
+            # === Compute regret for ALL legal actions ===
             legal_actions = np.where(mask)[0]
 
             # Sparse multi-action regret: list of [action_id, regret_value]
@@ -522,14 +547,12 @@ class DeepCFRTrainer:
             self.strategy_buffer.add(obs, sparse_strat, self.iteration)
 
             # Color symmetry augmentation
-            # For v2, we augment the chosen action regret only (to keep augmentation fast)
             if self.num_augments > 0 and random.random() < 0.5:
                 chosen_regret = (1.0 - strategy[chosen_action]) * adjusted_value
                 aug_triples = augment_sample_sparse(
                     obs, chosen_action, chosen_regret, ACTION_TABLE, self.num_augments
                 )
                 for aug_obs, aug_aid, aug_val in aug_triples:
-                    # Store as single-action sparse for augmented samples
                     aug_sparse = np.array([[aug_aid, aug_val]], dtype=np.float32)
                     self.regret_buffer.add(aug_obs, aug_sparse, self.iteration)
 

@@ -167,10 +167,11 @@ def _single_traverse(
 
             if p == traverser:
                 # Regret-based pruning: skip clearly bad actions
-                if iteration > 30 and len(legal) > 2:
+                if iteration > 100 and len(legal) > 3:
                     regret_vals = regrets_per_player[traverser][legal]
                     max_r = regret_vals.max()
-                    keep = regret_vals >= max_r - 1.0
+                    threshold = max(0.0, max_r * 0.1)  # relative threshold
+                    keep = regret_vals >= threshold
                     if keep.sum() >= 2:
                         legal = legal[keep]
 
@@ -196,6 +197,7 @@ def _single_traverse(
             'actions': actions,
             'sample_probs': sample_probs,
             'offer_snapshot': state.offer[:],
+            'scores_before': state.scores[:],
         })
 
         bid0 = action_id_to_counts(actions[0])
@@ -219,22 +221,30 @@ def _single_traverse(
             bid_l = bid0 if loser == 0 else bid1
             tracker.update_from_auction(winner, bid_w, bid_l, old_offer)
 
-        if state.round_num > depth // 10 + 1:
-            tracker.reset()
-
         depth += 1
 
-    # Terminal value
-    terminal_value = _compute_terminal_value(state, traverser, initial_round, initial_scores)
+    # === Dense Reward Shaping: per-decision-point effective values ===
+    opp = 1 - traverser
+    if state.round_num > initial_round:
+        final_t = state.scores[traverser]
+        final_o = state.scores[opp]
+    else:
+        final_t = state.scores[traverser] + compute_hand_score(state, traverser)
+        final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-    # Process decision points (v2: correct regret for all legal actions)
-    regret_samples, strategy_samples = _process_decision_points(
-        decision_points, traverser, terminal_value, iteration, num_augments, baseline
+    effective_values = []
+    for dp in decision_points:
+        sb = dp['scores_before']
+        gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
+        effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+
+    # Process decision points with per-point values
+    regret_samples, strategy_samples, value_samples = _process_decision_points(
+        decision_points, traverser, effective_values, iteration, num_augments
     )
 
-    value_samples = []
-
-    return terminal_value, regret_samples, strategy_samples, value_samples
+    total_value = effective_values[0] if effective_values else 0.0
+    return total_value, regret_samples, strategy_samples, value_samples
 
 
 def _win_probability(my_score: float, opp_score: float) -> float:
@@ -271,29 +281,42 @@ def _compute_terminal_value(
 def _process_decision_points(
     decision_points: list,
     traverser: int,
-    terminal_value: float,
+    effective_values: list,
     iteration: int,
     num_augments: int,
-    baseline: float = 0.0,
-) -> Tuple[list, list]:
-    """Returns (regret_samples, strategy_samples).
+) -> Tuple[list, list, list]:
+    """Returns (regret_samples, strategy_samples, value_samples).
 
-    v2: Correct regret estimation for ALL legal actions + baseline subtraction.
+    v3: Dense Reward Shaping with per-decision-point values.
+    Uses Value Network baseline for variance reduction.
     """
     regret_samples = []
     strategy_samples = []
+    value_samples = []
 
-    for dp in decision_points:
+    for i, dp in enumerate(decision_points):
         obs = dp['obs'][traverser]
         mask = dp['masks'][traverser]
         strategy = dp['strategies'][traverser]
         chosen_action = dp['actions'][traverser]
         sample_prob = dp['sample_probs'][traverser]
 
-        weight = min(10.0, 1.0 / max(sample_prob, 1e-6))
-        adjusted_value = (terminal_value - baseline) * weight
+        # Per-point effective value
+        point_value = effective_values[i]
 
-        # === v2: Compute regret for ALL legal actions ===
+        # Value Network baseline
+        with torch.inference_mode():
+            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            baseline = _w_value_net(obs_t).item()
+
+        # Store value training sample
+        value_samples.append((obs, np.array([point_value], dtype=np.float32), iteration))
+
+        # Importance weight with relaxed clamping (10 → 50)
+        weight = min(50.0, 1.0 / max(sample_prob, 1e-6))
+        adjusted_value = (point_value - baseline) * weight
+
+        # Compute regret for ALL legal actions
         legal_actions = np.where(mask)[0]
         regret_pairs = []
         for a in legal_actions:
@@ -313,7 +336,7 @@ def _process_decision_points(
         sparse_strat[:, 1] = strategy[nonzero_strats]
         strategy_samples.append((obs, sparse_strat, iteration))
 
-        # Augmentation (chosen action regret only, for speed)
+        # Augmentation
         if num_augments > 0 and random.random() < 0.5:
             chosen_regret = (1.0 - strategy[chosen_action]) * adjusted_value
             aug_triples = augment_sample_sparse(
@@ -323,4 +346,4 @@ def _process_decision_points(
                 aug_sparse = np.array([[aug_aid, aug_val]], dtype=np.float32)
                 regret_samples.append((aug_obs, aug_sparse, iteration))
 
-    return regret_samples, strategy_samples
+    return regret_samples, strategy_samples, value_samples
