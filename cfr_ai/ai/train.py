@@ -31,7 +31,7 @@ from .observation import OBS_DIM
 
 def main():
     parser = argparse.ArgumentParser(description="Deep CFR Training for Fafnir (v2)")
-    parser.add_argument("--iterations", type=int, default=5000)
+    parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--traversals", type=int, default=1000,
                         help="Traversals per iteration (1 traversal = 1 round)")
     parser.add_argument("--hidden", type=int, default=256)
