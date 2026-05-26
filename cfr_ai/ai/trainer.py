@@ -158,13 +158,13 @@ class DeepCFRTrainer:
     def __init__(
         self,
         hidden_dim: int = 256,
-        lr: float = 1e-3,
+        lr: float = 5e-4,
         buffer_capacity: int = 2_000_000,
-        batch_size: int = 1024,
-        train_steps_per_iter: int = 200,
+        batch_size: int = 2048,
+        train_steps_per_iter: int = 150,
         max_depth: int = 50,
-        num_augments: int = 2,
-        explore_epsilon: float = 0.4,
+        num_augments: int = 3,
+        explore_epsilon: float = 0.3,
         device: str = "auto",
         save_dir: str = "cfr_ai/ai/checkpoints",
         num_workers: int = 1,
@@ -222,9 +222,9 @@ class DeepCFRTrainer:
         self.iteration = 0
         self.total_traversals = 0
 
-        # Baseline EMA for variance reduction
+        # Baseline EMA for stats tracking (value net does the real baseline)
         self._baseline = 0.0
-        self._baseline_alpha = 0.01  # EMA smoothing factor
+        self._baseline_alpha = 0.005
 
         # Multiprocessing pool (lazy-init)
         self._pool = None
@@ -234,8 +234,8 @@ class DeepCFRTrainer:
     # ============================================================
     def _get_epsilon(self) -> float:
         """Adaptive exploration: high initial exploration, decaying over time."""
-        base = self.explore_epsilon  # default 0.4
-        return max(0.05, base * (0.997 ** self.iteration))
+        base = self.explore_epsilon  # default 0.3
+        return max(0.05, base * (0.998 ** self.iteration))
 
     # ============================================================
     # Score Randomization
