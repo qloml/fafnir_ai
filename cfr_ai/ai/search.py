@@ -18,7 +18,7 @@ from typing import List, Optional
 from .game_engine import (
     FafnirState, new_game, step_auction, NUM_COLORS,
     compute_hand_score, is_trash_limit_reached,
-    should_force_round_end_by_bag,
+    should_force_round_end_by_bag, determine_auction_winner,
 )
 from .action_space import (
     NUM_ACTIONS, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
@@ -185,7 +185,16 @@ class RealtimeSearch:
             bid0 = action_id_to_counts(opp_action_id)
             bid1 = action_id_to_counts(first_action_id)
 
+        old_offer = sim_state.offer[:]
+        old_caretaker = sim_state.caretaker
+        winner = determine_auction_winner(bid0, bid1, old_caretaker)
+
         step_auction(sim_state, bid0, bid1)
+        if winner is not None:
+            loser = 1 - winner
+            bid_w = bid0 if winner == 0 else bid1
+            bid_l = bid0 if loser == 0 else bid1
+            sim_tracker.update_from_auction(winner, bid_w, bid_l, old_offer)
 
         # Continue rollout using strategy network for both players
         depth = 1
@@ -212,7 +221,15 @@ class RealtimeSearch:
 
             bid0 = action_id_to_counts(action_ids[0])
             bid1 = action_id_to_counts(action_ids[1])
+            old_offer = sim_state.offer[:]
+            old_caretaker = sim_state.caretaker
+            winner = determine_auction_winner(bid0, bid1, old_caretaker)
             step_auction(sim_state, bid0, bid1)
+            if winner is not None:
+                loser = 1 - winner
+                bid_w = bid0 if winner == 0 else bid1
+                bid_l = bid0 if loser == 0 else bid1
+                sim_tracker.update_from_auction(winner, bid_w, bid_l, old_offer)
             depth += 1
 
         # Compute value

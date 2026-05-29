@@ -219,6 +219,38 @@ def compute_hand_score(state: FafnirState, player: int) -> int:
     return score
 
 
+def compute_visible_hand_potential(hand_counts: List[int]) -> float:
+    """
+    Estimate hand value using only the player's own hand.
+
+    This is intentionally weaker than compute_hand_score(): the real color
+    ranking depends on the opponent's private hand, which is unavailable to
+    the bot on server_0424.py. Keeping dim 33 fair prevents train/inference
+    observation drift.
+    """
+    ranked = [(i, hand_counts[i]) for i in range(1, NUM_COLORS)]
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    first_color = ranked[0][0] if ranked else -1
+    second_color = ranked[1][0] if len(ranked) > 1 else -1
+
+    raw = hand_counts[0]
+    for i in range(1, NUM_COLORS):
+        cnt = hand_counts[i]
+        if cnt == 0:
+            continue
+        if cnt >= 5:
+            continue
+        if i == first_color:
+            mult = 3
+        elif i == second_color:
+            mult = 2
+        else:
+            mult = -1
+        raw += cnt * mult
+
+    return max(-1.0, min(1.0, (raw + 15.0) / 37.5 - 1.0))
+
+
 def compute_expected_score(state: FafnirState, player: int) -> float:
     """
     Compute expected hand score for observation space (dim 33).
@@ -237,16 +269,26 @@ def clamp_score(x: int) -> int:
 # ============================================================
 # Auction Resolution
 # ============================================================
+def determine_auction_winner(bid0: List[int], bid1: List[int], caretaker: int) -> Optional[int]:
+    """Return the auction winner before mutating state, or None if both pass."""
+    total0 = sum(bid0)
+    total1 = sum(bid1)
+    max_bid = max(total0, total1)
+    if max_bid == 0:
+        return None
+    if total0 > total1:
+        return 0
+    if total1 > total0:
+        return 1
+    return 1 - caretaker
+
+
 def resolve_auction(state: FafnirState, bid0: List[int], bid1: List[int]) -> Optional[int]:
     """
     Resolve an auction given bids as count vectors [6].
     Returns winner index (0 or 1) or None if both bid 0.
     Mutates state in place.
     """
-    total0 = sum(bid0)
-    total1 = sum(bid1)
-    max_bid = max(total0, total1)
-
     # Record bid history
     state.bid_history.append({
         'bids': [bid0[:], bid1[:]],
@@ -254,23 +296,16 @@ def resolve_auction(state: FafnirState, bid0: List[int], bid1: List[int]) -> Opt
         'caretaker': state.caretaker,
     })
 
+    winner = determine_auction_winner(bid0, bid1, state.caretaker)
+
     # Both bid 0 -> offer goes to trash, both lose 1 point
-    if max_bid == 0:
+    if winner is None:
         for i in range(NUM_COLORS):
             state.trash[i] += state.offer[i]
         state.offer = [0] * NUM_COLORS
         state.scores[0] = clamp_score(state.scores[0] - 1)
         state.scores[1] = clamp_score(state.scores[1] - 1)
         return None
-
-    # Determine winner
-    if total0 > total1:
-        winner = 0
-    elif total1 > total0:
-        winner = 1
-    else:
-        # Tie: non-caretaker wins
-        winner = 1 - state.caretaker
 
     loser = 1 - winner
 

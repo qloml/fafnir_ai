@@ -41,6 +41,7 @@ my_index: Optional[int] = None
 last_state: Optional[Dict[str, Any]] = None
 bid_tracker = BidTracker()
 prev_round = 0
+_last_tracker_key: Optional[tuple] = None
 
 # Networks
 strategy_net: Optional[StrategyNetwork] = None
@@ -124,13 +125,50 @@ def offer_to_counts(offer: List[str]) -> List[int]:
     return counts
 
 
+def fair_state_view(st: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return the subset of server state allowed for fair BIDDING decisions.
+
+    server_0424.py may include sequential-bid leaks in action_log and opponent
+    views. Action selection must behave as simultaneous bidding, so this view
+    removes unresolved bids and any opponent hand/last_bid data.
+    """
+    fair = dict(st)
+    fair["action_log"] = []
+    fair["last_result"] = {}
+
+    players = []
+    for i, p in enumerate(players_of(st)):
+        src = p if isinstance(p, dict) else {}
+        view = {
+            "name": src.get("name"),
+            "score": src.get("score", 0),
+            "hand_count": src.get("hand_count", 0),
+            "bid_submitted": False,
+            "ok_ready": False,
+            "last_bid": None,
+        }
+        if my_index is not None and i == my_index:
+            hand = src.get("hand", [])
+            view["hand"] = hand[:] if isinstance(hand, list) else []
+            view["bid_submitted"] = src.get("bid_submitted", False)
+            view["ok_ready"] = src.get("ok_ready", False)
+        else:
+            view["hand"] = None
+        players.append(view)
+
+    fair["players"] = players
+    return fair
+
+
 # ============================================================
 # Action Selection
 # ============================================================
 def choose_action(st: Dict[str, Any]) -> List[str]:
     """Use strategy network to choose bid."""
-    hand = my_hand(st)
-    offer = offer_colors(st)
+    fair_st = fair_state_view(st)
+    hand = my_hand(fair_st)
+    offer = offer_colors(fair_st)
 
     hand_counts = hand_to_counts(hand)
     offer_counts = offer_to_counts(offer)
@@ -139,7 +177,7 @@ def choose_action(st: Dict[str, Any]) -> List[str]:
     mask = get_legal_mask(hand_counts, offer_counts)
 
     # Build observation
-    obs = build_observation_from_server_state(st, my_index, bid_tracker)
+    obs = build_observation_from_server_state(fair_st, my_index, bid_tracker)
 
     # Get strategy from network
     with torch.no_grad():
@@ -175,8 +213,9 @@ def choose_action(st: Dict[str, Any]) -> List[str]:
 
 def choose_action_random(st: Dict[str, Any]) -> List[str]:
     """Fallback random action if no model loaded."""
-    hand = my_hand(st)
-    offer = offer_colors(st)
+    fair_st = fair_state_view(st)
+    hand = my_hand(fair_st)
+    offer = offer_colors(fair_st)
     offer_set = set(offer)
 
     candidates = [s for s in hand if s not in offer_set]
@@ -194,13 +233,14 @@ def choose_action_random(st: Dict[str, Any]) -> List[str]:
 # ============================================================
 def update_tracker_from_state(st: Dict[str, Any]):
     """Update bid tracker from auction results."""
-    global prev_round
+    global prev_round, _last_tracker_key
 
     current_round = st.get("round", 0)
 
     # Reset tracker on new round
     if current_round != prev_round:
         bid_tracker.reset()
+        _last_tracker_key = None
         prev_round = current_round
 
     # Update from last result
@@ -211,12 +251,26 @@ def update_tracker_from_state(st: Dict[str, Any]):
     winner = lr.get("winner")
     if winner is None:
         return
+    try:
+        winner = int(winner)
+    except Exception:
+        return
 
     bids_by_player = lr.get("bids_by_player", [])
     if not isinstance(bids_by_player, list) or len(bids_by_player) < 2:
         return
 
     offer_stones = lr.get("offer", [])
+    key = (
+        current_round,
+        st.get("turn", 0),
+        winner,
+        tuple(tuple(b or []) for b in bids_by_player[:2]),
+        tuple(offer_stones or []),
+    )
+    if key == _last_tracker_key:
+        return
+
     bid0 = hand_to_counts(bids_by_player[0] if bids_by_player[0] else [])
     bid1 = hand_to_counts(bids_by_player[1] if bids_by_player[1] else [])
     offer_c = offer_to_counts(offer_stones if offer_stones else [])
@@ -226,6 +280,7 @@ def update_tracker_from_state(st: Dict[str, Any]):
     bid_loser = bid0 if loser == 0 else bid1
 
     bid_tracker.update_from_auction(winner, bid_winner, bid_loser, offer_c)
+    _last_tracker_key = key
 
 
 # ============================================================

@@ -23,7 +23,7 @@ from .game_engine import (
     FafnirState, new_game, step_auction, NUM_COLORS,
     compute_hand_score, clamp_score, is_trash_limit_reached,
     should_force_round_end_by_bag, setup_offer, do_round_end,
-    resolve_auction, check_game_end, SCORE_TO_WIN,
+    resolve_auction, check_game_end, SCORE_TO_WIN, determine_auction_winner,
 )
 from .action_space import (
     NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
@@ -203,19 +203,11 @@ def _single_traverse(
         bid0 = action_id_to_counts(actions[0])
         bid1 = action_id_to_counts(actions[1])
         old_offer = state.offer[:]
+        old_caretaker = state.caretaker
+        winner = determine_auction_winner(bid0, bid1, old_caretaker)
         step_auction(state, bid0, bid1)
 
-        total0, total1 = sum(bid0), sum(bid1)
-        if max(total0, total1) > 0:
-            if total0 > total1:
-                winner = 0
-            elif total1 > total0:
-                winner = 1
-            else:
-                winner = 1 - (state.caretaker if state.caretaker != (1 - traverser) else traverser)
-                if total0 == total1:
-                    pass
-
+        if winner is not None:
             loser = 1 - winner
             bid_w = bid0 if winner == 0 else bid1
             bid_l = bid0 if loser == 0 else bid1

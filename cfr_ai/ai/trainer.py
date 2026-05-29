@@ -38,7 +38,7 @@ from .game_engine import (
     FafnirState, new_game, step_auction, NUM_COLORS,
     compute_hand_score, clamp_score, is_trash_limit_reached,
     should_force_round_end_by_bag, setup_offer, do_round_end,
-    resolve_auction, check_game_end, SCORE_TO_WIN,
+    resolve_auction, check_game_end, SCORE_TO_WIN, determine_auction_winner,
 )
 from .action_space import (
     NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
@@ -359,24 +359,12 @@ class DeepCFRTrainer:
 
             # Update tracker before step
             old_offer = state.offer[:]
+            old_caretaker = state.caretaker
+            winner = determine_auction_winner(bid0, bid1, old_caretaker)
             step_auction(state, bid0, bid1)
 
             # Update bid tracker
-            total0, total1 = sum(bid0), sum(bid1)
-            if max(total0, total1) > 0:
-                if total0 > total1:
-                    winner = 0
-                elif total1 > total0:
-                    winner = 1
-                else:
-                    winner = 1 - (state.caretaker if state.caretaker != (1 - traverser) else traverser)
-                    # Actually, caretaker was already updated by step_auction
-                    # Use bid comparison directly
-                    if total0 == total1:
-                        # Before step_auction, caretaker was at the old value
-                        # We need to determine winner before state mutation
-                        pass  # winner is already set correctly by step_auction logic
-
+            if winner is not None:
                 loser = 1 - winner
                 bid_w = bid0 if winner == 0 else bid1
                 bid_l = bid0 if loser == 0 else bid1

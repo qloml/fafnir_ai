@@ -391,9 +391,32 @@ def build_obs(hands, bag, trash, offer, scores, ct, player,
     # [32] Am I caretaker?
     obs[32] = np.float32(1) if ct == player else np.float32(0)
 
-    # [33] Expected score
-    ranked_idx, _ = _rank_colors(hands)
-    raw = hand_score(hands, player, ranked_idx[0], ranked_idx[1])
+    # [33] Visible hand potential, using only this player's own hand.
+    first_c = np.int32(1)
+    second_c = np.int32(2)
+    first_n = np.int32(-1)
+    second_n = np.int32(-1)
+    for c in range(1, N_COLORS):
+        cnt = hands[player, c]
+        if cnt > first_n or (cnt == first_n and c < first_c):
+            second_n = first_n
+            second_c = first_c
+            first_n = cnt
+            first_c = np.int32(c)
+        elif cnt > second_n or (cnt == second_n and c < second_c):
+            second_n = cnt
+            second_c = np.int32(c)
+    raw = hands[player, 0]
+    for c in range(1, N_COLORS):
+        cnt = hands[player, c]
+        if cnt == 0 or cnt >= 5:
+            continue
+        if c == first_c:
+            raw += cnt * np.int32(3)
+        elif c == second_c:
+            raw += cnt * np.int32(2)
+        else:
+            raw -= cnt
     obs[33] = max(np.float32(-1.0), min(np.float32(1.0),
                   (np.float32(raw) + np.float32(15.0)) / np.float32(37.5) - np.float32(1.0)))
 

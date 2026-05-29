@@ -10,7 +10,7 @@ Observation vector (42 dimensions):
   [25-30] : My confirmed hand (6 colors) - what opponent knows I have
   [31]    : Bag remaining count (normalized)
   [32]    : Am I caretaker? (0 or 1)
-  [33]    : My expected score (normalized)
+  [33]    : My visible hand potential (normalized, own hand only)
   --- NEW (v2) ---
   [34]    : My game score (normalized: /1000)
   [35]    : Opponent's game score (normalized: /1000)
@@ -25,7 +25,7 @@ import numpy as np
 from typing import List, Dict, Any
 
 from .game_engine import (
-    FafnirState, NUM_COLORS, TOTAL_STONES, compute_expected_score,
+    FafnirState, NUM_COLORS, TOTAL_STONES, compute_visible_hand_potential,
     SCORE_TO_WIN, TRASH_LIMIT,
 )
 
@@ -136,8 +136,8 @@ def build_observation(
     # [32] Am I caretaker?
     obs[32] = 1.0 if state.caretaker == player else 0.0
 
-    # [33] My expected hand score (normalized)
-    obs[33] = compute_expected_score(state, player)
+    # [33] My visible hand potential (normalized, own hand only)
+    obs[33] = compute_visible_hand_potential(state.hand[player])
 
     # --- NEW (v2) ---
 
@@ -189,6 +189,8 @@ def build_observation_from_server_state(
     me = players[my_index]
     them = players[opp]
 
+    my_hand_counts = [0] * NUM_COLORS
+
     # [0-5] My hand
     hand = me.get("hand", [])
     if hand:
@@ -196,6 +198,7 @@ def build_observation_from_server_state(
             idx = COLOR_TO_IDX.get(s)
             if idx is not None:
                 obs[idx] += 1
+                my_hand_counts[idx] += 1
 
     # [6-11] Offer
     offer = server_state.get("offer", [])
@@ -231,13 +234,10 @@ def build_observation_from_server_state(
     caretaker = server_state.get("caretaker", 0)
     obs[32] = 1.0 if caretaker == my_index else 0.0
 
-    # [33] Expected score (approximate from available info)
-    # Since we can't compute the exact expected score from server state
-    # (we don't know opponent's hand), we estimate from our hand alone
     my_score = me.get("score", 0)
     opp_score = them.get("score", 0)
-    score_diff = (my_score - opp_score)
-    obs[33] = max(-1.0, min(1.0, score_diff / 30.0))
+    # [33] My visible hand potential (same fair feature as training)
+    obs[33] = compute_visible_hand_potential(my_hand_counts)
 
     # --- NEW (v2) ---
 
@@ -259,7 +259,7 @@ def build_observation_from_server_state(
     obs[38] = len(offer) / 10.0
 
     # [39] My hand total (normalized)
-    obs[39] = len(hand) / 20.0
+    obs[39] = sum(my_hand_counts) / 20.0
 
     # [40] Opponent's hand total (normalized)
     obs[40] = opp_total / 20.0
