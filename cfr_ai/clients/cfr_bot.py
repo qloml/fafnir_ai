@@ -45,6 +45,7 @@ _last_tracker_key: Optional[tuple] = None
 
 # Networks
 strategy_net: Optional[StrategyNetwork] = None
+regret_net: Optional[RegretNetwork] = None
 device = torch.device("cpu")
 
 # Anti-spam
@@ -55,6 +56,8 @@ _ok_sent_key: Optional[str] = None
 AUTO_NEXT = True
 THINK_DELAY = 0.01
 TEMPERATURE = 0.3  # Lower = more deterministic
+POLICY_MODE = "strategy"  # strategy or regret
+DETERMINISTIC = False
 
 
 def _loop_time() -> float:
@@ -179,12 +182,15 @@ def choose_action(st: Dict[str, Any]) -> List[str]:
     # Build observation
     obs = build_observation_from_server_state(fair_st, my_index, bid_tracker)
 
-    # Get strategy from network
-    with torch.no_grad():
+    # Get policy from network
+    with torch.inference_mode():
         obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        logits = strategy_net(obs_tensor).cpu().numpy()[0]
-
-    probs = masked_softmax(logits, mask, TEMPERATURE)
+        if POLICY_MODE == "regret" and regret_net is not None:
+            regrets = regret_net(obs_tensor).cpu().numpy()[0]
+            probs = regret_matching(regrets, mask)
+        else:
+            logits = strategy_net(obs_tensor).cpu().numpy()[0]
+            probs = masked_softmax(logits, mask, TEMPERATURE)
 
     # Sample action
     legal_actions = np.where(mask)[0]
@@ -194,7 +200,10 @@ def choose_action(st: Dict[str, Any]) -> List[str]:
     legal_probs = probs[legal_actions]
     legal_probs = legal_probs / (legal_probs.sum() + 1e-10)
 
-    action_id = np.random.choice(legal_actions, p=legal_probs)
+    if DETERMINISTIC:
+        action_id = int(legal_actions[np.argmax(legal_probs)])
+    else:
+        action_id = np.random.choice(legal_actions, p=legal_probs)
 
     # Convert to stone list
     stones = action_id_to_stones(int(action_id))
@@ -405,7 +414,7 @@ async def bid_rejected(data):
 # Main
 # ============================================================
 async def main():
-    global strategy_net, device, TEMPERATURE
+    global strategy_net, regret_net, device, TEMPERATURE, POLICY_MODE, DETERMINISTIC
 
     parser = argparse.ArgumentParser(description="Deep CFR Bot for Fafnir")
     parser.add_argument("--url", default="http://127.0.0.1:8765")
@@ -415,6 +424,10 @@ async def main():
                         help="Path to trained checkpoint")
     parser.add_argument("--temperature", type=float, default=0.3,
                         help="Sampling temperature (lower=more deterministic)")
+    parser.add_argument("--policy", choices=["strategy", "regret"], default="strategy",
+                        help="Use strategy_net softmax or regret_net regret matching")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Choose argmax action instead of sampling")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
@@ -422,6 +435,8 @@ async def main():
     cfg["room"] = args.room
     cfg["name"] = args.name
     TEMPERATURE = args.temperature
+    POLICY_MODE = args.policy
+    DETERMINISTIC = args.deterministic
     device = torch.device(args.device)
 
     # Load model
@@ -437,7 +452,17 @@ async def main():
         ).to(device)
         strategy_net.load_state_dict(ckpt['strategy_net'])
         strategy_net.eval()
-        print(f"[CFR] Model loaded (iter={ckpt.get('iteration', '?')})")
+        if POLICY_MODE == "regret":
+            if 'regret_net' not in ckpt:
+                raise RuntimeError("Checkpoint does not contain regret_net for --policy regret")
+            regret_net = RegretNetwork(
+                obs_dim=OBS_DIM,
+                num_actions=NUM_ACTIONS,
+                hidden=hidden_dim,
+            ).to(device)
+            regret_net.load_state_dict(ckpt['regret_net'])
+            regret_net.eval()
+        print(f"[CFR] Model loaded (iter={ckpt.get('iteration', '?')}, policy={POLICY_MODE})")
     else:
         print(f"[CFR] WARNING: No checkpoint at {args.checkpoint}, using random play")
         strategy_net = None
