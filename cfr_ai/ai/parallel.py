@@ -37,6 +37,7 @@ from .symmetry import augment_sample_sparse
 
 _w_regret_net = None
 _w_value_net = None
+_w_opp_regret_net = None
 _w_hidden_dim = None
 
 
@@ -45,7 +46,7 @@ def _worker_init(hidden_dim: int):
     Initialize worker-local network architecture (called once per worker process).
     Weights will be loaded per-batch from work arguments.
     """
-    global _w_regret_net, _w_value_net, _w_hidden_dim
+    global _w_regret_net, _w_value_net, _w_opp_regret_net, _w_hidden_dim
 
     _w_hidden_dim = hidden_dim
 
@@ -61,6 +62,9 @@ def _worker_init(hidden_dim: int):
     _w_value_net = ValueNetwork(OBS_DIM, hidden_dim)
     _w_value_net.eval()
 
+    _w_opp_regret_net = RegretNetwork(OBS_DIM, NUM_ACTIONS, hidden_dim)
+    _w_opp_regret_net.eval()
+
 
 def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     """
@@ -70,7 +74,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
         args: (num_traversals, start_traversal_id, iteration,
                max_depth, num_augments, explore_epsilon,
                baseline, score_randomize,
-               regret_state_dict, value_state_dict)
+               regret_state_dict, value_state_dict, opponent_regret_state_dict)
 
     Returns:
         dict with collected samples and stats.
@@ -78,13 +82,19 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     (num_traversals, start_traversal_id, iteration,
      max_depth, num_augments, explore_epsilon,
      baseline, score_randomize,
-     regret_sd, value_sd) = args
+     regret_sd, value_sd, opponent_sd) = args
 
     # Load updated weights for this iteration
     _w_regret_net.load_state_dict(regret_sd)
     _w_regret_net.eval()
     _w_value_net.load_state_dict(value_sd)
     _w_value_net.eval()
+    if opponent_sd is not None:
+        _w_opp_regret_net.load_state_dict(opponent_sd)
+        _w_opp_regret_net.eval()
+        opponent_net = _w_opp_regret_net
+    else:
+        opponent_net = None
 
     regret_samples = []
     strategy_samples = []
@@ -95,7 +105,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
         traverser = (start_traversal_id + i) % 2
         value, r_samps, s_samps, v_samps = _single_traverse(
             traverser, iteration, max_depth, num_augments, explore_epsilon,
-            baseline, score_randomize
+            baseline, score_randomize, opponent_net
         )
         total_value += value
         regret_samples.extend(r_samps)
@@ -119,6 +129,7 @@ def _single_traverse(
     explore_epsilon: float,
     baseline: float = 0.0,
     score_randomize: bool = True,
+    opponent_net=None,
 ) -> Tuple[float, list, list, list]:
     """
     Run a single game traversal. Same logic as DeepCFRTrainer.traverse_game
@@ -153,7 +164,8 @@ def _single_traverse(
 
             with torch.inference_mode():
                 obs_t = torch.tensor(obs[p], dtype=torch.float32).unsqueeze(0)
-                regrets_per_player[p] = _w_regret_net(obs_t).numpy()[0]
+                net = opponent_net if (p != traverser and opponent_net is not None) else _w_regret_net
+                regrets_per_player[p] = net(obs_t).numpy()[0]
             strategies[p] = regret_matching(regrets_per_player[p], masks[p])
 
         actions = [0, 0]

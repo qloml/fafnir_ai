@@ -25,7 +25,7 @@ import os
 import time
 import signal
 import sys
-from .trainer import DeepCFRTrainer
+from .trainer import DeepCFRTrainer, PROGRAM_VERSION
 from .observation import OBS_DIM
 
 
@@ -56,6 +56,14 @@ def main():
                         help="Disable score randomization")
     parser.add_argument("--epsilon", type=float, default=0.3,
                         help="Initial exploration epsilon (decays over training)")
+    parser.add_argument("--program-version", type=int, default=PROGRAM_VERSION,
+                        help="Program/checkpoint compatibility version used in archive names")
+    parser.add_argument("--archive-every", type=int, default=20,
+                        help="Save versioned checkpoint archive every N iterations (0=disable)")
+    parser.add_argument("--past-opponent-prob", type=float, default=0.25,
+                        help="Probability that the non-traverser uses a frozen past self")
+    parser.add_argument("--max-past-opponents", type=int, default=8,
+                        help="Maximum archived past opponents kept in memory")
     args = parser.parse_args()
 
     # Auto-detect workers: cap at 4 to limit memory usage
@@ -77,13 +85,18 @@ def main():
         save_dir=args.save_dir,
         num_workers=args.workers,
         score_randomize=not args.no_score_rand,
+        program_version=args.program_version,
+        past_opponent_prob=args.past_opponent_prob,
+        max_past_opponents=args.max_past_opponents,
     )
 
     if args.resume:
         trainer.load()
+    trainer.load_past_opponents_from_dir()
 
     # Graceful Ctrl+C handling: save before exit
     interrupted = False
+    last_archived_iteration = None
 
     def signal_handler(sig, frame):
         nonlocal interrupted
@@ -96,6 +109,8 @@ def main():
         try:
             trainer.shutdown_pool()
             trainer.save()
+            if args.archive_every > 0:
+                trainer.save_archive()
         except Exception as e:
             print(f"[DeepCFR v2] Error during save: {e}")
         print(f"[DeepCFR v2] Saved. Exiting.")
@@ -113,6 +128,10 @@ def main():
     print(f"  Device: {trainer.device}")
     print(f"  Score randomization: {not args.no_score_rand}")
     print(f"  Save dir: {args.save_dir}")
+    print(f"  Program version: v{args.program_version}")
+    print(f"  Archive every: {args.archive_every} iters")
+    print(f"  Past opponent prob: {args.past_opponent_prob}")
+    print(f"  Max past opponents: {args.max_past_opponents}")
     print(f"  Eval every: {args.eval_every} iters")
     print(f"  Ctrl+C to stop (progress will be saved)")
     print(f"{'='*60}\n")
@@ -137,10 +156,17 @@ def main():
         # Save periodically
         if (i + 1) % args.save_every == 0:
             trainer.save()
+        if args.archive_every > 0 and (i + 1) % args.archive_every == 0:
+            trainer.save_archive()
+            trainer.add_current_to_past_opponents()
+            last_archived_iteration = trainer.iteration
 
     # Final save and cleanup
     if not interrupted:
         trainer.save()
+        if args.archive_every > 0 and last_archived_iteration != trainer.iteration:
+            trainer.save_archive()
+            trainer.add_current_to_past_opponents()
     trainer.shutdown_pool()
 
     total_time = time.time() - total_start

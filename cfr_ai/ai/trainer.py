@@ -27,6 +27,7 @@ import os
 import sys
 import time
 import random
+import glob
 import multiprocessing as mp
 import numpy as np
 import torch
@@ -49,6 +50,10 @@ from .networks import (
     regret_matching, masked_softmax,
 )
 from .symmetry import augment_sample, augment_sample_sparse
+
+
+PROGRAM_VERSION = 1
+LATEST_CHECKPOINT_NAME = "deep_cfr_checkpoint.pt"
 
 
 # ============================================================
@@ -174,6 +179,10 @@ class DeepCFRTrainer:
         dcfr_gamma: float = 2.0,
         # Score randomization
         score_randomize: bool = True,
+        # Past-self opponent mixing
+        program_version: int = PROGRAM_VERSION,
+        past_opponent_prob: float = 0.0,
+        max_past_opponents: int = 8,
     ):
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -192,6 +201,9 @@ class DeepCFRTrainer:
         self.num_augments = num_augments
         self.explore_epsilon = explore_epsilon
         self.save_dir = save_dir
+        self.program_version = program_version
+        self.past_opponent_prob = max(0.0, min(1.0, past_opponent_prob))
+        self.max_past_opponents = max(0, max_past_opponents)
 
         # DCFR parameters
         self.dcfr_alpha = dcfr_alpha
@@ -229,6 +241,13 @@ class DeepCFRTrainer:
         # Multiprocessing pool (lazy-init)
         self._pool = None
 
+        # Past-self opponent snapshots. These are frozen regret networks used
+        # only for non-traverser action sampling.
+        self.past_opponent_states: List[Dict[str, torch.Tensor]] = []
+        self._past_opponent_net: Optional[RegretNetwork] = None
+        self._past_opponent_loaded_idx: Optional[int] = None
+        self._archive_paths_by_iteration: Dict[int, str] = {}
+
     # ============================================================
     # Adaptive Exploration
     # ============================================================
@@ -256,6 +275,97 @@ class DeepCFRTrainer:
         # Random scores: both players get independent random scores (0~990)
         state.scores[0] = random.randint(0, 990)
         state.scores[1] = random.randint(0, 990)
+
+    # ============================================================
+    # Past-self opponent pool
+    # ============================================================
+    def _archive_stem(self, iteration: Optional[int] = None) -> str:
+        it = self.iteration if iteration is None else iteration
+        return f"deep_cfr_checkpoint_v{self.program_version}_iter{it:06d}"
+
+    def _archive_filename(self, iteration: Optional[int] = None, duplicate_index: int = 0) -> str:
+        stem = self._archive_stem(iteration)
+        run_index = duplicate_index if duplicate_index > 0 else 1
+        return f"{stem}_run{run_index:02d}.pt"
+
+    def _next_archive_path(self, path: str, iteration: Optional[int] = None) -> str:
+        legacy_path = os.path.join(path, f"{self._archive_stem(iteration)}.pt")
+        archive_path = os.path.join(path, self._archive_filename(iteration))
+        if not os.path.exists(archive_path) and not os.path.exists(legacy_path):
+            return archive_path
+        for duplicate_index in range(2, 10000):
+            archive_path = os.path.join(path, self._archive_filename(iteration, duplicate_index))
+            if not os.path.exists(archive_path):
+                return archive_path
+        raise RuntimeError(f"Could not find an unused archive name for {self._archive_stem(iteration)}")
+
+    def _cpu_regret_state(self) -> Dict[str, torch.Tensor]:
+        return {k: v.detach().cpu().clone() for k, v in self.regret_net.state_dict().items()}
+
+    def add_current_to_past_opponents(self):
+        """Add the current regret network to the frozen past-opponent pool."""
+        if self.max_past_opponents <= 0:
+            return
+        self.past_opponent_states.append(self._cpu_regret_state())
+        if len(self.past_opponent_states) > self.max_past_opponents:
+            self.past_opponent_states = self.past_opponent_states[-self.max_past_opponents:]
+        self._past_opponent_loaded_idx = None
+        print(
+            f"[DeepCFR v2] Past-opponent pool size: "
+            f"{len(self.past_opponent_states)}/{self.max_past_opponents}"
+        )
+
+    def load_past_opponents_from_dir(self, path: Optional[str] = None):
+        """Load versioned archived checkpoints as frozen opponents."""
+        if self.max_past_opponents <= 0:
+            return
+        if path is None:
+            path = self.save_dir
+        pattern = os.path.join(path, f"deep_cfr_checkpoint_v{self.program_version}_iter*.pt")
+        candidates = sorted(glob.glob(pattern))[-self.max_past_opponents:]
+        loaded = 0
+        for ckpt_path in candidates:
+            try:
+                ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+                if ckpt.get("hidden_dim", self.hidden_dim) != self.hidden_dim:
+                    continue
+                if ckpt.get("obs_dim", OBS_DIM) != OBS_DIM:
+                    continue
+                if "regret_net" not in ckpt:
+                    continue
+                state = {k: v.detach().cpu().clone() for k, v in ckpt["regret_net"].items()}
+                self.past_opponent_states.append(state)
+                loaded += 1
+            except Exception as e:
+                print(f"[DeepCFR v2] Skip past opponent {ckpt_path}: {e}")
+        if len(self.past_opponent_states) > self.max_past_opponents:
+            self.past_opponent_states = self.past_opponent_states[-self.max_past_opponents:]
+        if loaded:
+            print(f"[DeepCFR v2] Loaded {loaded} past opponents from {path}")
+
+    def _sample_past_opponent_net(self) -> Optional[RegretNetwork]:
+        if not self.past_opponent_states:
+            return None
+        if self.past_opponent_prob <= 0.0 or random.random() >= self.past_opponent_prob:
+            return None
+
+        idx = random.randrange(len(self.past_opponent_states))
+        if self._past_opponent_net is None:
+            self._past_opponent_net = RegretNetwork(OBS_DIM, NUM_ACTIONS, self.hidden_dim).to(self.device)
+            self._past_opponent_net.eval()
+        if self._past_opponent_loaded_idx != idx:
+            self._past_opponent_net.load_state_dict(self.past_opponent_states[idx])
+            self._past_opponent_net.to(self.device)
+            self._past_opponent_net.eval()
+            self._past_opponent_loaded_idx = idx
+        return self._past_opponent_net
+
+    def _sample_past_opponent_state_dict(self) -> Optional[Dict[str, torch.Tensor]]:
+        if not self.past_opponent_states:
+            return None
+        if self.past_opponent_prob <= 0.0 or random.random() >= self.past_opponent_prob:
+            return None
+        return random.choice(self.past_opponent_states)
 
     # ============================================================
     # Outcome Sampling CFR Traversal (v2: correct regret estimation)
@@ -289,6 +399,7 @@ class DeepCFRTrainer:
         decision_points = []
 
         epsilon = self._get_epsilon()
+        past_opponent_net = self._sample_past_opponent_net()
 
         while state.phase == "BIDDING" and depth < self.max_depth and state.round_num == initial_round:
             # Get obs and masks for both players
@@ -302,7 +413,8 @@ class DeepCFRTrainer:
 
                 with torch.inference_mode():
                     obs_t = torch.tensor(obs[p], dtype=torch.float32, device=self.device).unsqueeze(0)
-                    regrets = self.regret_net(obs_t).cpu().numpy()[0]
+                    net = past_opponent_net if (p != traverser and past_opponent_net is not None) else self.regret_net
+                    regrets = net(obs_t).cpu().numpy()[0]
                 strategies[p] = regret_matching(regrets, masks[p])
 
             # Sample actions for both players
@@ -704,12 +816,14 @@ class DeepCFRTrainer:
         offset = self.total_traversals
         for w in range(self.num_workers):
             n = per_worker + (1 if w < remainder else 0)
+            opponent_sd = self._sample_past_opponent_state_dict()
             work_items.append((
                 n, offset, self.iteration,
                 self.max_depth, self.num_augments, epsilon,
                 self._baseline,
                 self.score_randomize,
                 regret_sd, value_sd,
+                opponent_sd,
             ))
             offset += n
 
@@ -785,11 +899,8 @@ class DeepCFRTrainer:
     # ============================================================
     # Save / Load
     # ============================================================
-    def save(self, path: Optional[str] = None):
-        if path is None:
-            path = self.save_dir
-        os.makedirs(path, exist_ok=True)
-        torch.save({
+    def _checkpoint_payload(self) -> Dict[str, Any]:
+        return {
             'regret_net': self.regret_net.state_dict(),
             'strategy_net': self.strategy_net.state_dict(),
             'value_net': self.value_net.state_dict(),
@@ -801,13 +912,34 @@ class DeepCFRTrainer:
             'hidden_dim': self.hidden_dim,
             'obs_dim': OBS_DIM,
             'version': 2,
-        }, os.path.join(path, 'deep_cfr_checkpoint.pt'))
+            'program_version': self.program_version,
+        }
+
+    def save(self, path: Optional[str] = None):
+        if path is None:
+            path = self.save_dir
+        os.makedirs(path, exist_ok=True)
+        torch.save(self._checkpoint_payload(), os.path.join(path, LATEST_CHECKPOINT_NAME))
         print(f"[DeepCFR v2] Saved to {path}")
+
+    def save_archive(self, path: Optional[str] = None):
+        if path is None:
+            path = self.save_dir
+        os.makedirs(path, exist_ok=True)
+        cached_path = self._archive_paths_by_iteration.get(self.iteration)
+        if cached_path and os.path.exists(cached_path):
+            print(f"[DeepCFR v2] Archive already saved for iter={self.iteration}: {cached_path}")
+            return cached_path
+        archive_path = self._next_archive_path(path)
+        torch.save(self._checkpoint_payload(), archive_path)
+        self._archive_paths_by_iteration[self.iteration] = archive_path
+        print(f"[DeepCFR v2] Archived checkpoint: {archive_path}")
+        return archive_path
 
     def load(self, path: Optional[str] = None):
         if path is None:
             path = self.save_dir
-        ckpt_path = os.path.join(path, 'deep_cfr_checkpoint.pt')
+        ckpt_path = os.path.join(path, LATEST_CHECKPOINT_NAME)
         if not os.path.exists(ckpt_path):
             print(f"[DeepCFR v2] No checkpoint at {ckpt_path}")
             return False

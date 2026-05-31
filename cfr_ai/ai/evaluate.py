@@ -63,6 +63,11 @@ class EvalStats:
     ai_bid_total: int = 0
     ai_passes: int = 0
     ai_gold_bid: int = 0
+    gold_games: int = 0
+    no_gold_games: int = 0
+    gold_score_diff_sum: float = 0.0
+    no_gold_score_diff_sum: float = 0.0
+    gold_action_count_sum: int = 0
 
     def record_action(self, bid: Sequence[int]) -> None:
         total = int(sum(bid))
@@ -73,10 +78,17 @@ class EvalStats:
         if bid and bid[0] > 0:
             self.ai_gold_bid += 1
 
-    def record_game(self, score_diff: float, turns: int) -> None:
+    def record_game(self, score_diff: float, turns: int, gold_actions: int = 0) -> None:
         self.games += 1
         self.score_diff_sum += float(score_diff)
         self.turns += int(turns)
+        if gold_actions > 0:
+            self.gold_games += 1
+            self.gold_score_diff_sum += float(score_diff)
+            self.gold_action_count_sum += int(gold_actions)
+        else:
+            self.no_gold_games += 1
+            self.no_gold_score_diff_sum += float(score_diff)
         if score_diff > 0:
             self.wins += 1
         elif score_diff == 0:
@@ -96,6 +108,10 @@ class EvalStats:
             "avg_ai_bid": self.ai_bid_total / max(1, self.ai_actions),
             "ai_pass_rate": self.ai_passes / max(1, self.ai_actions),
             "ai_gold_bid_rate": self.ai_gold_bid / max(1, self.ai_actions),
+            "gold_game_rate": self.gold_games / max(1, self.games),
+            "mean_diff_gold_games": self.gold_score_diff_sum / max(1, self.gold_games),
+            "mean_diff_no_gold_games": self.no_gold_score_diff_sum / max(1, self.no_gold_games),
+            "avg_gold_actions_in_gold_games": self.gold_action_count_sum / max(1, self.gold_games),
         }
 
 
@@ -314,6 +330,7 @@ def play_one_eval_game(
     initial_scores = state.scores[:]
     last_round = state.round_num
     turns = 0
+    ai_gold_actions = 0
 
     while state.phase == "BIDDING" and turns < max_turns:
         if state.round_num != last_round:
@@ -344,7 +361,10 @@ def play_one_eval_game(
         bid1 = action_id_to_counts(action_ids[1])
 
         if stats is not None:
-            stats.record_action(bid0 if ai_player == 0 else bid1)
+            ai_bid = bid0 if ai_player == 0 else bid1
+            stats.record_action(ai_bid)
+            if ai_bid[0] > 0:
+                ai_gold_actions += 1
 
         old_offer = state.offer[:]
         old_caretaker = state.caretaker
@@ -366,7 +386,7 @@ def play_one_eval_game(
         score_diff = score_diff_for_round(state, ai_player, initial_scores, initial_round)
 
     if stats is not None:
-        stats.record_game(score_diff, turns)
+        stats.record_game(score_diff, turns, ai_gold_actions)
     return score_diff
 
 
@@ -441,14 +461,22 @@ def evaluate_vs_checkpoint(
     ).win_rate
 
 
-def format_summary(stats: EvalStats) -> str:
+def format_summary(stats: EvalStats, gold_report: bool = False) -> str:
     s = stats.summary()
-    return (
+    text = (
         f"win={s['win_rate']:.1%} draw={s['draw_rate']:.1%} "
         f"diff={s['mean_score_diff']:.2f} turns={s['avg_turns']:.1f} "
         f"bid={s['avg_ai_bid']:.2f} pass={s['ai_pass_rate']:.1%} "
         f"gold_bid={s['ai_gold_bid_rate']:.1%}"
     )
+    if gold_report:
+        text += (
+            f" | gold_games={s['gold_game_rate']:.1%} "
+            f"diff_gold={s['mean_diff_gold_games']:.2f} "
+            f"diff_no_gold={s['mean_diff_no_gold_games']:.2f} "
+            f"gold_actions/game={s['avg_gold_actions_in_gold_games']:.2f}"
+        )
+    return text
 
 
 def parse_temperatures(text: Optional[str], fallback: float) -> List[float]:
@@ -513,6 +541,7 @@ def main() -> None:
     parser.add_argument("--full-game", action="store_true", help="Evaluate until target score instead of one round")
     parser.add_argument("--target-score", type=int, default=SCORE_TO_WIN)
     parser.add_argument("--max-turns", type=int, default=2000)
+    parser.add_argument("--gold-report", action="store_true", help="Print score split for games with/without gold bids")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
@@ -541,7 +570,7 @@ def main() -> None:
             print(
                 f"[EVAL] {path} iter={iter_s} hidden={hidden} "
                 f"policy={args.policy} opponent={opponent} temp={temp} | "
-                f"{format_summary(stats)}"
+                f"{format_summary(stats, args.gold_report)}"
             )
             key = (score, stats.summary()["mean_score_diff"])
             if best is None or key > best[0]:
@@ -551,7 +580,7 @@ def main() -> None:
         _, path, temp, stats, iter_s = best
         print(
             f"[EVAL] BEST path={path} iter={iter_s} temp={temp} | "
-            f"{format_summary(stats)}"
+            f"{format_summary(stats, args.gold_report)}"
         )
 
 
