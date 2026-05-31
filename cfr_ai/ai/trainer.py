@@ -28,6 +28,7 @@ import sys
 import time
 import random
 import glob
+import csv
 import multiprocessing as mp
 import numpy as np
 import torch
@@ -183,6 +184,8 @@ class DeepCFRTrainer:
         program_version: int = PROGRAM_VERSION,
         past_opponent_prob: float = 0.0,
         max_past_opponents: int = 8,
+        past_opponent_selection: str = "recent",
+        past_opponent_manifest: Optional[str] = None,
     ):
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -204,6 +207,8 @@ class DeepCFRTrainer:
         self.program_version = program_version
         self.past_opponent_prob = max(0.0, min(1.0, past_opponent_prob))
         self.max_past_opponents = max(0, max_past_opponents)
+        self.past_opponent_selection = past_opponent_selection
+        self.past_opponent_manifest = past_opponent_manifest
 
         # DCFR parameters
         self.dcfr_alpha = dcfr_alpha
@@ -321,8 +326,8 @@ class DeepCFRTrainer:
             return
         if path is None:
             path = self.save_dir
-        pattern = os.path.join(path, f"deep_cfr_checkpoint_v{self.program_version}_iter*.pt")
-        candidates = sorted(glob.glob(pattern))[-self.max_past_opponents:]
+        candidates = self._select_past_opponent_paths(path)
+        source = self.past_opponent_manifest if self.past_opponent_manifest else path
         loaded = 0
         for ckpt_path in candidates:
             try:
@@ -341,7 +346,64 @@ class DeepCFRTrainer:
         if len(self.past_opponent_states) > self.max_past_opponents:
             self.past_opponent_states = self.past_opponent_states[-self.max_past_opponents:]
         if loaded:
-            print(f"[DeepCFR v2] Loaded {loaded} past opponents from {path}")
+            print(f"[DeepCFR v2] Loaded {loaded} past opponents from {source}")
+
+    def _select_past_opponent_paths(self, path: str) -> List[str]:
+        if self.past_opponent_selection == "manifest" or self.past_opponent_manifest:
+            candidates = self._read_past_opponent_manifest()
+        else:
+            pattern = os.path.join(path, f"deep_cfr_checkpoint_v{self.program_version}_iter*.pt")
+            candidates = sorted(glob.glob(pattern))
+
+        candidates = [p for p in candidates if p and os.path.exists(p)]
+        if not candidates:
+            return []
+
+        limit = self.max_past_opponents
+        mode = self.past_opponent_selection
+        if mode == "manifest":
+            return candidates[:limit]
+        if mode == "spread":
+            if len(candidates) <= limit:
+                return candidates
+            idxs = np.linspace(0, len(candidates) - 1, num=limit, dtype=int)
+            return [candidates[int(i)] for i in idxs]
+        if mode == "random":
+            if len(candidates) <= limit:
+                return candidates
+            return sorted(random.sample(candidates, limit))
+        return candidates[-limit:]
+
+    def _read_past_opponent_manifest(self) -> List[str]:
+        if not self.past_opponent_manifest:
+            return []
+        if not os.path.exists(self.past_opponent_manifest):
+            print(f"[DeepCFR v2] Past-opponent manifest not found: {self.past_opponent_manifest}")
+            return []
+
+        base_dir = os.path.dirname(os.path.abspath(self.past_opponent_manifest))
+        paths: List[str] = []
+        with open(self.past_opponent_manifest, "r", encoding="utf-8") as f:
+            first = f.readline()
+            f.seek(0)
+            if "," in first and "checkpoint" in first:
+                for row in csv.DictReader(f):
+                    value = row.get("checkpoint") or row.get("path") or ""
+                    paths.append(value.strip())
+            else:
+                for line in f:
+                    value = line.strip()
+                    if not value or value.startswith("#"):
+                        continue
+                    paths.append(value.split(",", 1)[0].strip())
+
+        resolved = []
+        for p in paths:
+            if os.path.isabs(p):
+                resolved.append(p)
+            else:
+                resolved.append(os.path.normpath(os.path.join(base_dir, p)))
+        return resolved
 
     def _sample_past_opponent_net(self) -> Optional[RegretNetwork]:
         if not self.past_opponent_states:

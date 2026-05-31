@@ -69,6 +69,7 @@ cfr_ai/
     ├── fairness_check.py  # 漏洩情報を使わないことの検査
     ├── fast_engine.py     # numba用の高速エンジン部品
     ├── game_engine.py     # 学習・評価用ゲームエンジン
+    ├── league.py          # checkpointリーグ評価と採用候補ランキング
     ├── networks.py        # Regret / Strategy / Value Network
     ├── observation.py     # 42次元観測とBidTracker
     ├── parallel.py        # 並列traversal worker
@@ -123,6 +124,12 @@ uv --cache-dir .uv-cache run python -m cfr_ai.ai.train --resume
 uv --cache-dir .uv-cache run python -u -m cfr_ai.ai.train --resume --program-version 1 --archive-every 20 --past-opponent-prob 0.25 --max-past-opponents 8
 ```
 
+リーグ評価で作成した候補を過去相手として使う場合:
+
+```bash
+uv --cache-dir .uv-cache run python -u -m cfr_ai.ai.train --resume --past-opponent-selection manifest --past-opponent-manifest cfr_ai/ai/reports/league_YYYYMMDD_HHMMSS/past_opponents.txt --past-opponent-prob 0.25
+```
+
 通常の最新checkpointは `deep_cfr_checkpoint.pt` に保存されます。履歴用checkpointは `deep_cfr_checkpoint_v1_iter000020_run01.pt` のように、プログラムバージョン、反復数、run番号を含む名前で保存されます。既存の履歴ファイルは上書きされません。同じ保存先で新規学習を始めて履歴名が衝突した場合は、`deep_cfr_checkpoint_v1_iter000020_run02.pt` のように別名で保存されます。
 
 `--past-opponent-prob` は、CFR traversal中の非traverser側を一定確率で過去checkpoint由来の凍結済みRegret Networkに置き換える設定です。自己対戦相手が現在の自分だけに寄りすぎるのを避け、過去方策への脆さを減らす目的で使います。
@@ -146,6 +153,8 @@ uv --cache-dir .uv-cache run python -u -m cfr_ai.ai.train --resume --program-ver
 | `--archive-every` | `20` | N反復ごとに履歴checkpointを保存。`0` で無効 |
 | `--past-opponent-prob` | `0.25` | 非traverser側に過去の自分を使う確率 |
 | `--max-past-opponents` | `8` | メモリ上に保持する過去方策の最大数 |
+| `--past-opponent-selection` | `recent` | 過去相手の選び方。`recent` / `spread` / `random` / `manifest` |
+| `--past-opponent-manifest` | なし | `manifest` 選択時に読み込むcheckpoint一覧 |
 | `--device` | `auto` | `auto` / `cpu` / `cuda` |
 | `--workers` | `7` | 並列worker数。`0` は自動設定、`1` は単一process |
 | `--eval-every` | `50` | N反復ごとの簡易評価。`0` で無効 |
@@ -153,6 +162,8 @@ uv --cache-dir .uv-cache run python -u -m cfr_ai.ai.train --resume --program-ver
 | `--epsilon` | `0.3` | 初期探索率 |
 
 学習後は、最後のcheckpointをそのまま採用せず、評価で最良のcheckpointと温度を選んでください。
+
+`--past-opponent-prob` は学習結果に影響します。比較するときは、同じ学習条件で `0.0`、`0.15`、`0.25`、`0.4` などを分けて学習し、後述のcheckpointリーグ評価で比較します。値が高すぎると過去方策への頑健性は上がる一方で、現在方策への収束が遅くなることがあります。
 
 ## 評価
 
@@ -201,6 +212,23 @@ uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai
 - `gold_actions/game`: 金をbidしたゲームにおける平均金bid回数
 
 `gold_bid` が高く、かつ `diff_gold` が `diff_no_gold` より明確に低い場合、金を使う局面の価値推定が甘い可能性があります。温度を下げる、過去checkpoint比較で金bid率の低いモデルを選ぶ、または追加学習時にそのcheckpointを候補から外す判断材料にしてください。
+
+### checkpointリーグ評価
+
+複数checkpoint、temperature、policyをまとめて比較し、金bid率も含めて採用候補をランキングするには `league.py` を使います。
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.league --checkpoint-glob "cfr_ai/ai/checkpoints/**/*.pt" --games 1000 --league-games 300 --temperatures 0.1,0.2,0.3 --policies strategy,regret --opponents heuristic --gold-penalty 20
+```
+
+出力は `cfr_ai/ai/reports/league_YYYYMMDD_HHMMSS/` に保存されます。
+
+- `baseline_results.csv`: heuristic/randomなど固定相手への評価結果
+- `league_results.csv`: 上位checkpoint同士の対戦結果
+- `ranking.csv`: 勝率、得点差、金bid率を含めた総合ランキング
+- `past_opponents.txt`: 学習時に `--past-opponent-manifest` へ渡す過去相手候補
+
+`--gold-penalty` はランキング時に金bid率へ掛ける減点係数です。これは推論時の行動を直接変えるものではなく、金bidが多いcheckpointを採用候補から下げるための評価上の重みです。
 
 ### 過去checkpointとの比較
 

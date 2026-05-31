@@ -64,6 +64,12 @@ def main():
                         help="Probability that the non-traverser uses a frozen past self")
     parser.add_argument("--max-past-opponents", type=int, default=8,
                         help="Maximum archived past opponents kept in memory")
+    parser.add_argument("--past-opponent-selection",
+                        choices=["recent", "spread", "random", "manifest"],
+                        default="recent",
+                        help="How archived past opponents are selected")
+    parser.add_argument("--past-opponent-manifest", default=None,
+                        help="Text or CSV file listing checkpoint paths to use as past opponents")
     args = parser.parse_args()
 
     # Auto-detect workers: cap at 4 to limit memory usage
@@ -88,6 +94,8 @@ def main():
         program_version=args.program_version,
         past_opponent_prob=args.past_opponent_prob,
         max_past_opponents=args.max_past_opponents,
+        past_opponent_selection=args.past_opponent_selection,
+        past_opponent_manifest=args.past_opponent_manifest,
     )
 
     if args.resume:
@@ -132,6 +140,9 @@ def main():
     print(f"  Archive every: {args.archive_every} iters")
     print(f"  Past opponent prob: {args.past_opponent_prob}")
     print(f"  Max past opponents: {args.max_past_opponents}")
+    print(f"  Past opponent selection: {args.past_opponent_selection}")
+    if args.past_opponent_manifest:
+        print(f"  Past opponent manifest: {args.past_opponent_manifest}")
     print(f"  Eval every: {args.eval_every} iters")
     print(f"  Ctrl+C to stop (progress will be saved)")
     print(f"{'='*60}\n")
