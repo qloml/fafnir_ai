@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FAFNIR Spectator</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="app">
+        <section id="join-panel" class="panel join">
+            <div>
+                <h1>FAFNIR Spectator</h1>
+                <p id="join-status">server_0424.py spectator</p>
+            </div>
+            <label>Server <input id="server-url" value="http://127.0.0.1:8765"></label>
+            <label>Room <input id="room-id" value="room1"></label>
+            <label>Name <input id="spectator-name" value="Spectator"></label>
+            <button id="join-btn">Watch</button>
+        </section>
+
+        <section id="watch-panel" class="watch hidden">
+            <header class="topbar panel">
+                <div>
+                    <strong id="room-title">Room -</strong>
+                    <span id="status-text">Waiting...</span>
+                </div>
+                <div class="meta">
+                    <span id="phase">WAITING</span>
+                    <span id="round-turn">R0 T0</span>
+                    <span id="bag">Bag 0</span>
+                </div>
+            </header>
+
+            <section class="grid">
+                <article id="p0" class="panel player"></article>
+                <article id="p1" class="panel player"></article>
+
+                <article class="panel market">
+                    <div>
+                        <h2>Offer</h2>
+                        <div id="offer" class="stones"></div>
+                    </div>
+                    <div>
+                        <h2>Trash</h2>
+                        <div id="trash" class="trash"></div>
+                    </div>
+                </article>
+
+                <article class="panel score-panel">
+                    <h2>Score / Turn</h2>
+                    <div id="score-chart" class="score-chart"></div>
+                </article>
+
+                <article class="panel result-panel">
+                    <h2>Last Result</h2>
+                    <div id="result" class="result">-</div>
+                </article>
+
+                <details class="panel collapsible conn-panel">
+                    <summary>Connections</summary>
+                    <div id="connections" class="connections"></div>
+                </details>
+
+                <details class="panel collapsible log-panel history-panel">
+                    <summary>History</summary>
+                    <div id="history" class="history"></div>
+                </details>
+            </section>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
