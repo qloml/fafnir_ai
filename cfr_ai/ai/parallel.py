@@ -162,10 +162,20 @@ def _single_traverse(
             obs[p] = build_observation(state, p, tracker)
             masks[p] = get_legal_mask(state.hand[p], state.offer)
 
+        if opponent_net is None:
             with torch.inference_mode():
-                obs_t = torch.tensor(obs[p], dtype=torch.float32).unsqueeze(0)
-                net = opponent_net if (p != traverser and opponent_net is not None) else _w_regret_net
-                regrets_per_player[p] = net(obs_t).numpy()[0]
+                obs_t = torch.as_tensor(np.stack(obs), dtype=torch.float32)
+                regrets_batch = _w_regret_net(obs_t).numpy()
+            regrets_per_player[0] = regrets_batch[0]
+            regrets_per_player[1] = regrets_batch[1]
+        else:
+            for p in range(2):
+                with torch.inference_mode():
+                    obs_t = torch.as_tensor(obs[p], dtype=torch.float32).unsqueeze(0)
+                    net = opponent_net if p != traverser else _w_regret_net
+                    regrets_per_player[p] = net(obs_t).numpy()[0]
+
+        for p in range(2):
             strategies[p] = regret_matching(regrets_per_player[p], masks[p])
 
         actions = [0, 0]
@@ -298,6 +308,14 @@ def _process_decision_points(
     strategy_samples = []
     value_samples = []
 
+    if not decision_points:
+        return regret_samples, strategy_samples, value_samples
+
+    baseline_obs = np.stack([dp['obs'][traverser] for dp in decision_points])
+    with torch.inference_mode():
+        obs_t = torch.as_tensor(baseline_obs, dtype=torch.float32)
+        baselines = _w_value_net(obs_t).numpy()
+
     for i, dp in enumerate(decision_points):
         obs = dp['obs'][traverser]
         mask = dp['masks'][traverser]
@@ -309,9 +327,7 @@ def _process_decision_points(
         point_value = effective_values[i]
 
         # Value Network baseline
-        with torch.inference_mode():
-            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            baseline = _w_value_net(obs_t).item()
+        baseline = float(baselines[i])
 
         # Store value training sample
         value_samples.append((obs, np.array([point_value], dtype=np.float32), iteration))
@@ -331,14 +347,14 @@ def _process_decision_points(
             regret_pairs.append([a, regret_a])
 
         sparse_regret = np.array(regret_pairs, dtype=np.float32)
-        regret_samples.append((obs, sparse_regret, iteration))
+        regret_samples.append((obs, sparse_regret, iteration, mask))
 
         # Store sparse strategy
         nonzero_strats = np.nonzero(strategy)[0]
         sparse_strat = np.zeros((len(nonzero_strats), 2), dtype=np.float32)
         sparse_strat[:, 0] = nonzero_strats
         sparse_strat[:, 1] = strategy[nonzero_strats]
-        strategy_samples.append((obs, sparse_strat, iteration))
+        strategy_samples.append((obs, sparse_strat, iteration, mask))
 
         # Augmentation
         if num_augments > 0 and random.random() < 0.5:

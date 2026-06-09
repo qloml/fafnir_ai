@@ -52,6 +52,8 @@ def main():
                         help="Parallel workers (0=auto, 1=single-process)")
     parser.add_argument("--eval-every", type=int, default=50,
                         help="Evaluate vs random every N iterations (0=disable)")
+    parser.add_argument("--final-eval-games", type=int, default=500,
+                        help="Final evaluation games after training (0=disable)")
     parser.add_argument("--no-score-rand", action="store_true",
                         help="Disable score randomization")
     parser.add_argument("--epsilon", type=float, default=0.3,
@@ -185,13 +187,14 @@ def main():
     print(f"[DeepCFR v2] Total traversals: {trainer.total_traversals}")
 
     # Final evaluation
-    try:
-        from .evaluate import evaluate_vs_random
-        win_rate = evaluate_vs_random(trainer.strategy_net, trainer.device,
-                                     num_games=500)
-        print(f"[EVAL] Final vs Random: win_rate={win_rate:.1%} (500 games)")
-    except Exception as e:
-        print(f"[EVAL] Final eval error: {e}")
+    if args.final_eval_games > 0:
+        try:
+            from .evaluate import evaluate_vs_random
+            win_rate = evaluate_vs_random(trainer.strategy_net, trainer.device,
+                                         num_games=args.final_eval_games)
+            print(f"[EVAL] Final vs Random: win_rate={win_rate:.1%} ({args.final_eval_games} games)")
+        except Exception as e:
+            print(f"[EVAL] Final eval error: {e}")
 
 
 if __name__ == "__main__":

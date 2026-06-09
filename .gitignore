@@ -183,3 +183,4 @@ output/
 checkpoints/
 logs/
 cfr_ai/ai/reports/
+mppo_ai/rl/reports/

@@ -143,6 +143,7 @@ button {
 
 .grid {
     display: grid;
+    align-items: start;
     grid-template-columns: 1fr 1fr 0.9fr 0.9fr;
     grid-template-areas:
         "p0 p1 market result"
@@ -171,10 +172,12 @@ button {
 
 .conn-panel {
     grid-area: conn;
+    align-self: start;
 }
 
 .history-panel {
     grid-area: history;
+    align-self: start;
 }
 
 .player {

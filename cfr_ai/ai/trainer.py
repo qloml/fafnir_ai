@@ -74,7 +74,8 @@ class ReservoirBuffer:
 
     def __init__(self, capacity: int = 2_000_000):
         self.capacity = capacity
-        self.buffer: List[Tuple[np.ndarray, np.ndarray, int]] = []
+        self.buffer: List[Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]] = []
+        self._iterations = np.empty(capacity, dtype=np.int32)
         self.total_seen = 0
         self._needs_mask = True  # whether to reconstruct masks on sample
         self._sparse_target = False  # if True, target is (action_id, value) pair
@@ -82,14 +83,21 @@ class ReservoirBuffer:
         self._sparse_regret_multi = False  # if True, target is list of [action_id, regret_value]
 
     def add(self, obs: np.ndarray, target: np.ndarray, iteration: int, legal_mask: np.ndarray = None):
-        """Add a sample. legal_mask arg is accepted but ignored (for API compat)."""
+        """Add a sample, optionally caching its legal-action mask."""
         self.total_seen += 1
+        cached_mask = None
+        if legal_mask is not None:
+            cached_mask = np.packbits(legal_mask.astype(np.bool_, copy=False))
+        item = (obs, target, iteration, cached_mask)
         if len(self.buffer) < self.capacity:
-            self.buffer.append((obs, target, iteration))
+            write_idx = len(self.buffer)
+            self.buffer.append(item)
+            self._iterations[write_idx] = iteration
         else:
             idx = random.randint(0, self.total_seen - 1)
             if idx < self.capacity:
-                self.buffer[idx] = (obs, target, iteration)
+                self.buffer[idx] = item
+                self._iterations[idx] = iteration
 
     def sample_batches(self, batch_size: int, num_batches: int, num_actions: int = 0, current_iteration: int = 0):
         total_samples = batch_size * num_batches
@@ -99,7 +107,7 @@ class ReservoirBuffer:
 
         # DCFR weighting: newer iterations get higher weight
         if current_iteration > 1:
-            iters = np.fromiter((b[2] for b in self.buffer), dtype=np.float64, count=n_avail)
+            iters = self._iterations[:n_avail].astype(np.float64, copy=True)
             np.clip(iters, 1, None, out=iters)
             # DCFR gamma=2 weighting: (t/T)^2
             ratios = iters / current_iteration
@@ -141,12 +149,26 @@ class ReservoirBuffer:
 
             # Reconstruct legal masks
             if self._needs_mask and num_actions > 1:
-                masks = np.stack([
-                    get_legal_mask(
-                        self.buffer[idx][0][:6].astype(int).tolist(),
-                        self.buffer[idx][0][6:12].astype(int).tolist(),
-                    ) for idx in indices
-                ])
+                cached_masks = [
+                    self.buffer[idx][3] if len(self.buffer[idx]) > 3 else None
+                    for idx in indices
+                ]
+                if all(mask is not None for mask in cached_masks):
+                    masks = np.unpackbits(
+                        np.stack(cached_masks), axis=1, count=num_actions
+                    ).astype(np.float32, copy=False)
+                else:
+                    masks = []
+                    for idx, cached_mask in zip(indices, cached_masks):
+                        item = self.buffer[idx]
+                        if cached_mask is not None:
+                            masks.append(np.unpackbits(cached_mask, count=num_actions).astype(np.float32))
+                        else:
+                            masks.append(get_legal_mask(
+                                item[0][:6].astype(int).tolist(),
+                                item[0][6:12].astype(int).tolist(),
+                            ).astype(np.float32, copy=False))
+                    masks = np.stack(masks)
             else:
                 masks = np.ones((len(indices), 1), dtype=np.float32)
 
@@ -468,15 +490,27 @@ class DeepCFRTrainer:
             obs = [None, None]
             masks = [None, None]
             strategies = [None, None]
+            regrets_per_player = [None, None]
 
             for p in range(2):
                 obs[p] = build_observation(state, p, tracker)
                 masks[p] = get_legal_mask(state.hand[p], state.offer)
 
+            if past_opponent_net is None:
                 with torch.inference_mode():
-                    obs_t = torch.tensor(obs[p], dtype=torch.float32, device=self.device).unsqueeze(0)
-                    net = past_opponent_net if (p != traverser and past_opponent_net is not None) else self.regret_net
-                    regrets = net(obs_t).cpu().numpy()[0]
+                    obs_t = torch.as_tensor(np.stack(obs), dtype=torch.float32, device=self.device)
+                    regrets_batch = self.regret_net(obs_t).cpu().numpy()
+                regrets_per_player[0] = regrets_batch[0]
+                regrets_per_player[1] = regrets_batch[1]
+            else:
+                for p in range(2):
+                    with torch.inference_mode():
+                        obs_t = torch.as_tensor(obs[p], dtype=torch.float32, device=self.device).unsqueeze(0)
+                        net = past_opponent_net if p != traverser else self.regret_net
+                        regrets_per_player[p] = net(obs_t).cpu().numpy()[0]
+
+            for p in range(2):
+                regrets = regrets_per_player[p]
                 strategies[p] = regret_matching(regrets, masks[p])
 
             # Sample actions for both players
@@ -492,7 +526,7 @@ class DeepCFRTrainer:
                 if p == traverser:
                     # Regret-based pruning: skip clearly bad actions
                     if self.iteration > 100 and len(legal) > 3:
-                        regret_vals = regrets[legal]
+                        regret_vals = regrets_per_player[traverser][legal]
                         max_r = regret_vals.max()
                         threshold = max(0.0, max_r * 0.1)  # relative threshold
                         keep = regret_vals >= threshold
@@ -656,6 +690,14 @@ class DeepCFRTrainer:
           - u_a = counterfactual value of action a (now per-point)
           - v(I) = baseline from value network
         """
+        if not decision_points:
+            return
+
+        baseline_obs = np.stack([dp['obs'][traverser] for dp in decision_points])
+        with torch.inference_mode():
+            obs_t = torch.as_tensor(baseline_obs, dtype=torch.float32, device=self.device)
+            baselines = self.value_net(obs_t).detach().cpu().numpy()
+
         for i, dp in enumerate(decision_points):
             obs = dp['obs'][traverser]
             mask = dp['masks'][traverser]
@@ -667,9 +709,7 @@ class DeepCFRTrainer:
             point_value = effective_values[i]
 
             # Value Network baseline (improved variance reduction)
-            with torch.inference_mode():
-                obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-                baseline = self.value_net(obs_t).cpu().item()
+            baseline = float(baselines[i])
 
             # Store value training sample
             self.value_buffer.add(
@@ -699,14 +739,14 @@ class DeepCFRTrainer:
                 regret_pairs.append([a, regret_a])
 
             sparse_regret = np.array(regret_pairs, dtype=np.float32)
-            self.regret_buffer.add(obs, sparse_regret, self.iteration)
+            self.regret_buffer.add(obs, sparse_regret, self.iteration, mask)
 
             # Store strategy sample as sparse format
             nonzero_strats = np.nonzero(strategy)[0]
             sparse_strat = np.zeros((len(nonzero_strats), 2), dtype=np.float32)
             sparse_strat[:, 0] = nonzero_strats
             sparse_strat[:, 1] = strategy[nonzero_strats]
-            self.strategy_buffer.add(obs, sparse_strat, self.iteration)
+            self.strategy_buffer.add(obs, sparse_strat, self.iteration, mask)
 
             # Color symmetry augmentation
             if self.num_augments > 0 and random.random() < 0.5:

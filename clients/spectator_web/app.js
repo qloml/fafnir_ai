@@ -6,6 +6,7 @@ let roomId = "";
 let history = [];
 let lastState = null;
 let chartResetSeq = 0;
+let scoreSnapshots = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,10 +47,11 @@ function join() {
 
 function renderState(state) {
     lastState = state;
-    if (Array.isArray(state.action_log) && history.length === 0) {
-        history = state.action_log.slice(-80);
+    if (Array.isArray(state.action_log)) {
+        mergeHistory(state.action_log);
     }
     syncChartReset(state);
+    recordScoreSnapshot(state);
 
     $("room-title").textContent = `Room ${state.room_id || roomId || "-"}`;
     $("status-text").textContent = state.status || "-";
@@ -101,18 +103,27 @@ function renderResult(state) {
     }
 
     if (lr.winner === null || lr.winner === undefined) {
-        box.append(el("div", "", "No bid / offer to trash"));
-        box.append(labeledStones("Offer", safeList(lr.offer || state.last_offer)));
+        const p0Bid = bestBid(lr, 0);
+        const p1Bid = bestBid(lr, 1);
+        box.append(
+            el("div", "", "Winner: -"),
+            el("div", "", "Loser: -"),
+            labeledStones(`P0 Bid (${p0Bid.length})`, p0Bid),
+            labeledStones(`P1 Bid (${p1Bid.length})`, p1Bid),
+            labeledStones("Offer", safeList(lr.offer || state.last_offer)),
+        );
         return;
     }
 
     const winner = Number(lr.winner);
     const loser = lr.loser === undefined || lr.loser === null ? 1 - winner : Number(lr.loser);
+    const p0Bid = bestBid(lr, 0);
+    const p1Bid = bestBid(lr, 1);
     box.append(
         el("div", "", `Winner: P${winner} ${lr.winner_name || ""}`),
         el("div", "", `Loser: P${loser} ${lr.loser_name || ""}`),
-        labeledStones("Win Bid", bestBid(lr, winner)),
-        labeledStones("Lose Bid", bestBid(lr, loser)),
+        labeledStones(`P0 Bid (${p0Bid.length})`, p0Bid),
+        labeledStones(`P1 Bid (${p1Bid.length})`, p1Bid),
         labeledStones("Offer", safeList(lr.offer || state.last_offer)),
     );
 }
@@ -137,10 +148,13 @@ function renderScoreChart(state) {
             turn: Math.max(1, Number(payload.turn || 1)),
             p0: Number(payload.score[0] || 0),
             p1: Number(payload.score[1] || 0),
-        }))
-        .slice(-30);
+        }));
+    const pointsByTurn = new Map();
+    scorePoints.forEach((point) => pointsByTurn.set(point.turn, point));
+    scoreSnapshots.forEach((point) => pointsByTurn.set(point.turn, point));
+    const chartPoints = Array.from(pointsByTurn.values()).sort((a, b) => a.turn - b.turn);
 
-    if (!scorePoints.length) {
+    if (!chartPoints.length) {
         const players = state.players || [];
         const p0 = players[0] ? Number(players[0].score || 0) : 0;
         const p1 = players[1] ? Number(players[1].score || 0) : 0;
@@ -153,10 +167,10 @@ function renderScoreChart(state) {
         return;
     }
 
-    const maxTurn = Math.max(1, Number(state.turn || 1), ...scorePoints.map((point) => point.turn));
-    const maxScore = Math.max(1, ...scorePoints.flatMap((point) => [point.p0, point.p1]));
-    const points = [{ label: "T1", turn: 1, p0: 0, p1: 0 }, ...scorePoints];
-    const last = scorePoints[scorePoints.length - 1];
+    const maxTurn = Math.max(1, Number(state.turn || 1), ...chartPoints.map((point) => point.turn));
+    const maxScore = Math.max(1, ...chartPoints.flatMap((point) => [point.p0, point.p1]));
+    const points = [{ label: "T1", turn: 1, p0: 0, p1: 0 }, ...chartPoints];
+    const last = chartPoints[chartPoints.length - 1];
 
     root.append(
         makeScoreSvg(points, maxTurn, maxScore),
@@ -177,7 +191,35 @@ function syncChartReset(state) {
 
     if (isNewGameStart) {
         chartResetSeq = Math.max(chartResetSeq, maxHistorySeq());
+        scoreSnapshots = [];
     }
+}
+
+function recordScoreSnapshot(state) {
+    if (state.phase === "GAME_END") {
+        scoreSnapshots = [];
+        return;
+    }
+
+    const players = state.players || [];
+    if (players.length < 2) return;
+
+    const stateTurn = Math.max(1, Number(state.turn || 1));
+    const scoreTurn = Math.max(1, stateTurn - (stateTurn > 1 ? 1 : 0));
+    const point = {
+        label: `R${state.round || "?"} T${scoreTurn}`,
+        turn: scoreTurn,
+        p0: Number(players[0].score || 0),
+        p1: Number(players[1].score || 0),
+    };
+
+    const existingIndex = scoreSnapshots.findIndex((item) => item.turn === point.turn);
+    if (existingIndex >= 0) {
+        scoreSnapshots[existingIndex] = point;
+    } else {
+        scoreSnapshots.push(point);
+    }
+    scoreSnapshots.sort((a, b) => a.turn - b.turn);
 }
 
 function maxHistorySeq() {
@@ -245,10 +287,21 @@ function renderConnections(connections) {
 }
 
 function pushHistory(entry) {
-    history.push(entry);
-    if (history.length > 160) history = history.slice(-160);
+    mergeHistory([entry]);
     renderHistory();
     if (lastState) renderScoreChart(lastState);
+}
+
+function mergeHistory(entries) {
+    const seen = new Set(history.map((entry, index) => actionSeq(entry, index)));
+    entries.forEach((entry, index) => {
+        if (!entry) return;
+        const seq = actionSeq(entry, history.length + index);
+        if (seen.has(seq)) return;
+        seen.add(seq);
+        history.push(entry);
+    });
+    history.sort((a, b) => actionSeq(a, 0) - actionSeq(b, 0));
 }
 
 function renderHistory() {
