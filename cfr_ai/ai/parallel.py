@@ -7,9 +7,9 @@ then receives updated weights each iteration via work arguments.
 
 v2 changes:
 - Correct regret estimation for all legal actions
-- Score randomization support
+- Optional score randomization support
 - Adaptive exploration support
-- OBS_DIM = 42
+- OBS_DIM = 33
 
 Designed for Windows (spawn-based multiprocessing).
 """
@@ -130,7 +130,7 @@ def _single_traverse(
     num_augments: int,
     explore_epsilon: float,
     baseline: float = 0.0,
-    score_randomize: bool = True,
+    score_randomize: bool = False,
     target_mode: str = "terminal",
     opponent_net=None,
 ) -> Tuple[float, list, list, list]:

@@ -136,6 +136,13 @@ def load_model_policy(
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     hidden_dim = ckpt.get("hidden_dim", 192)
+    ckpt_obs_dim = ckpt.get("obs_dim")
+    if ckpt_obs_dim != OBS_DIM:
+        print(
+            f"[EVAL] Skip incompatible checkpoint: {checkpoint_path} "
+            f"(obs_dim={ckpt_obs_dim}, current={OBS_DIM})"
+        )
+        return None, ckpt
 
     strategy_net = StrategyNetwork(
         obs_dim=OBS_DIM,

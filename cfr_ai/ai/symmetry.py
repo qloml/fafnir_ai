@@ -42,7 +42,7 @@ def apply_color_permutation(
     perm: Tuple[int, ...],
 ) -> np.ndarray:
     """
-    Apply a color permutation to an observation vector (34 or 42 dim).
+    Apply a color permutation to an observation vector (33 dim).
 
     perm is a permutation of [1,2,3,4,5] (non-gold indices).
     Gold (index 0) is never moved.
@@ -54,10 +54,8 @@ def apply_color_permutation(
       [18-23] opp confirmed -> swap indices 1-5
       [24]    opp unknown count -> unchanged (scalar)
       [25-30] my confirmed  -> swap indices 1-5
-      [31]    bag remaining -> unchanged
-      [32]    is caretaker  -> unchanged
-      [33]    expected score -> unchanged
-      [34-41] v2 features (scores, round, turn, totals) -> unchanged (scalars)
+      [31]    is caretaker  -> unchanged
+      [32]    visible hand potential -> unchanged
     """
     new_obs = obs.copy()
 
@@ -206,4 +204,3 @@ def augment_sample_sparse(
             results.append((aug_obs, new_aid, value))
 
     return results
-

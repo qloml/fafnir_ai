@@ -33,7 +33,7 @@ class DummyStrategyNet:
 
     def __call__(self, obs: torch.Tensor) -> torch.Tensor:
         base = torch.linspace(-1.0, 1.0, NUM_ACTIONS, device=obs.device)
-        obs_factor = 1.0 + obs[:, 33:34] * 0.05
+        obs_factor = 1.0 + obs[:, 32:33] * 0.05
         return base.unsqueeze(0).repeat(obs.shape[0], 1) * obs_factor
 
 

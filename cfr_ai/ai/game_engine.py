@@ -383,9 +383,8 @@ def get_legal_mask_fast(hand, offer, action_table):
 
 
 @njit(cache=True, fastmath=True)
-def build_observation_fast_arrays(hands, bag, trash, offer, scores, caretaker,
-                                  player, confirmed, round_num, turn_num):
-    obs = np.zeros(42, dtype=np.float32)
+def build_observation_fast_arrays(hands, trash, offer, caretaker, player, confirmed):
+    obs = np.zeros(33, dtype=np.float32)
     opp = np.int32(1 - player)
     for c in range(NUM_COLORS):
         obs[c] = np.float32(hands[player, c])
@@ -401,28 +400,8 @@ def build_observation_fast_arrays(hands, bag, trash, offer, scores, caretaker,
         opp_confirmed_total += confirmed[opp, c]
     obs[24] = np.float32(max(np.int32(0), opp_total - opp_confirmed_total))
 
-    bag_left = np.int32(0)
-    for c in range(NUM_COLORS):
-        bag_left += bag[c]
-    obs[31] = np.float32(bag_left) / np.float32(TOTAL_STONES)
-    obs[32] = np.float32(1.0) if caretaker == player else np.float32(0.0)
-    obs[33] = _visible_hand_potential_fast(hands[player])
-    obs[34] = np.float32(scores[player]) / np.float32(SCORE_TO_WIN)
-    obs[35] = np.float32(scores[opp]) / np.float32(SCORE_TO_WIN)
-    obs[36] = min(np.float32(round_num), np.float32(20.0)) / np.float32(20.0)
-    obs[37] = min(np.float32(turn_num), np.float32(30.0)) / np.float32(30.0)
-
-    offer_total = np.int32(0)
-    my_total = np.int32(0)
-    trash_total = np.int32(0)
-    for c in range(NUM_COLORS):
-        offer_total += offer[c]
-        my_total += hands[player, c]
-        trash_total += trash[c]
-    obs[38] = np.float32(offer_total) / np.float32(10.0)
-    obs[39] = np.float32(my_total) / np.float32(20.0)
-    obs[40] = np.float32(opp_total) / np.float32(20.0)
-    obs[41] = np.float32(trash_total) / np.float32(NUM_COLORS * TRASH_LIMIT)
+    obs[31] = np.float32(1.0) if caretaker == player else np.float32(0.0)
+    obs[32] = _visible_hand_potential_fast(hands[player])
     return obs
 
 
@@ -526,7 +505,7 @@ def compute_visible_hand_potential(hand_counts: List[int]) -> float:
 
     This is intentionally weaker than compute_hand_score(): the real color
     ranking depends on the opponent's private hand, which is unavailable to
-    the bot on server_0424.py. Keeping dim 33 fair prevents train/inference
+    the bot on server_0424.py. Keeping dim 32 fair prevents train/inference
     observation drift.
     """
     return float(_visible_hand_potential_fast(np.asarray(hand_counts, dtype=np.int32)))
@@ -534,7 +513,7 @@ def compute_visible_hand_potential(hand_counts: List[int]) -> float:
 
 def compute_expected_score(state: FafnirState, player: int) -> float:
     """
-    Compute expected hand score for observation space (dim 33).
+    Compute expected hand score using the full hidden state.
     This estimates "if the round ended now, how many points would I get?"
     Normalized to roughly [-1, 1] range (from [-15, +60]).
     """
@@ -665,8 +644,7 @@ def warmup() -> None:
     random.setstate(random_state)
     confirmed = np.zeros((2, NUM_COLORS), dtype=np.int32)
     _ = build_observation_fast_arrays(
-        state.hand, state.bag, state.trash, state.offer, state.scores,
-        state.caretaker, np.int32(0), confirmed, state.round_num, state.turn_num,
+        state.hand, state.trash, state.offer, state.caretaker, np.int32(0), confirmed,
     )
     action_table = np.zeros((1, NUM_COLORS), dtype=np.int32)
     _ = get_legal_mask_fast(state.hand[0], state.offer, action_table)

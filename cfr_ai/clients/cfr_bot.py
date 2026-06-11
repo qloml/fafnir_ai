@@ -445,6 +445,12 @@ async def main():
         print(f"[CFR] Loading checkpoint: {args.checkpoint}")
         ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
         hidden_dim = ckpt.get('hidden_dim', 192)
+        ckpt_obs_dim = ckpt.get('obs_dim')
+        if ckpt_obs_dim != OBS_DIM:
+            raise RuntimeError(
+                f"Checkpoint obs_dim={ckpt_obs_dim} is incompatible with current OBS_DIM={OBS_DIM}. "
+                "Retrain CFR after the observation layout change."
+            )
         strategy_net = StrategyNetwork(
             obs_dim=OBS_DIM,
             num_actions=NUM_ACTIONS,

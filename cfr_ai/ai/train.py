@@ -18,7 +18,7 @@ Options:
     --device DEVICE      cpu/cuda/auto (default: auto)
     --workers N          Number of parallel workers (default: 7)
     --eval-every N       Evaluate vs random every N iterations (default: 0)
-    --no-score-rand      Disable score randomization
+    --score-rand         Enable hidden score randomization (default: disabled)
 """
 import argparse
 import os
@@ -55,8 +55,10 @@ def main():
                         help="Evaluate vs random every N iterations (0=disable)")
     parser.add_argument("--final-eval-games", type=int, default=0,
                         help="Final evaluation games after training (0=disable)")
+    parser.add_argument("--score-rand", action="store_true",
+                        help="Enable hidden score randomization (default: disabled)")
     parser.add_argument("--no-score-rand", action="store_true",
-                        help="Disable score randomization")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--target-mode", choices=["terminal", "dense"], default="terminal",
                         help="Training target: pure round terminal value or per-point dense value")
     parser.add_argument("--epsilon", type=float, default=0.3,
@@ -97,7 +99,7 @@ def main():
         device=args.device,
         save_dir=args.save_dir,
         num_workers=args.workers,
-        score_randomize=not args.no_score_rand,
+        score_randomize=args.score_rand and not args.no_score_rand,
         target_mode=args.target_mode,
         program_version=args.program_version,
         past_opponent_prob=args.past_opponent_prob,
@@ -142,7 +144,7 @@ def main():
     print(f"  Obs dim: {OBS_DIM}")
     print(f"  Workers: {args.workers}")
     print(f"  Device: {trainer.device}")
-    print(f"  Score randomization: {not args.no_score_rand}")
+    print(f"  Score randomization: {args.score_rand and not args.no_score_rand}")
     print(f"  Target mode: {args.target_mode}")
     print(f"  Save dir: {args.save_dir}")
     print(f"  Program version: v{args.program_version}")

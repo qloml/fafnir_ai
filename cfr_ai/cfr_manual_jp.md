@@ -1,60 +1,35 @@
 # Deep CFR AI for Fafnir
 
-Fafnir（ファフニル）を `server_0424.py` 上でプレイするための Deep CFR ベースAIです。
+`cfr_ai` は、`server_0424.py` 上の Fafnir をプレイする Deep CFR 系 AI です。
+学習、評価、checkpoint リーグ、Socket.IO 対戦 bot を含みます。
 
-このディレクトリには、学習用ゲームエンジン、Deep CFRトレーナー、評価ツール、対戦用Socket.IO botが含まれます。
+## 現在の設計方針
 
-## 方針
+対戦時の行動選択では、公開情報と自分の手札だけを使います。
+サーバー payload に相手の未公開情報が含まれていても、`clients/cfr_bot.py` の `fair_state_view()` で除外します。
 
-このAIは `server_0424.py` の実装仕様に従います。ただし、サーバーから届く可能性がある非公開情報や、順番入札による後手有利は使いません。AIの意思決定は、公開情報と自分の手札だけに基づく同時入札ゲームとして扱います。
-
-行動選択で使う情報:
+使う情報:
 
 - 自分の手札
-- ファフニル上の宝石（offer）
-- 捨て札
-- 山札残数
-- 自分と相手のスコア
-- 世話係
-- ラウンド番号 / ターン番号
+- 現在の offer
+- trash
+- caretaker
 - 解決済みの `last_result`
-- 解決済み入札から推定できる確定手札
+- 解決済み bid から推定した confirmed hand
 
-行動選択で使わない情報:
+使わない情報:
 
-- `BIDDING` 中に `action_log` へ流れる相手の未解決bid
-- `resolve_before` / `resolve_after` などに含まれる全員の手札
-- `action_log` に残った相手手札
-- 相手の未解決 `last_bid`
-- 相手が先に提出済みかどうかを使った後手 best response
-
-実装上は `clients/cfr_bot.py` の `fair_state_view()` が、対戦時の行動選択に使う状態から漏洩情報を除外します。
-
-## クイックスタート
-
-Python実行には `uv` を使います。Windows環境でuv cacheが衝突する場合があるため、以下の例では `--cache-dir .uv-cache` を付けています。通常のuv cacheが問題なく使える環境では省略できます。
-
-```bash
-uv --version
-```
-
-既存チェックポイントを評価:
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500
-```
-
-対戦botを起動:
-
-```bash
-uv run python cfr_ai/clients/cfr_bot.py --url http://127.0.0.1:8765 --room room1 --name DeepCFR --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --temperature 0.3
-```
-
-フェアプレイ境界を検査:
-
-```bash
-uv run python -m cfr_ai.ai.fairness_check
-```
+- `BIDDING` 中の相手の未解決 bid
+- `action_log` に残る相手手札や未解決 bid
+- `resolve_before` / `resolve_after` に含まれる全員の手札
+- 相手の `last_bid`
+- 相手が先に提出済みかどうかを利用した後手 best response
+- bag 残数
+- 自分と相手のスコア
+- round / turn
+- offer 合計枚数
+- 自分と相手の手札合計枚数
+- trash 合計枚数
 
 ## ディレクトリ構成
 
@@ -62,282 +37,259 @@ uv run python -m cfr_ai.ai.fairness_check
 cfr_ai/
 ├── cfr_manual_jp.md
 ├── clients/
-│   └── cfr_bot.py         # server_0424.py接続用の対戦bot
+│   └── cfr_bot.py         # server_0424.py 接続用 bot
 └── ai/
-    ├── action_space.py    # bid行動の列挙と合法手マスク
-    ├── evaluate.py        # 評価CLI
-    ├── fairness_check.py  # 漏洩情報を使わないことの検査
-    ├── fast_engine.py     # numba用の高速エンジン部品
-    ├── game_engine.py     # 学習・評価用ゲームエンジン
-    ├── league.py          # checkpointリーグ評価と採用候補ランキング
+    ├── action_space.py    # bid 行動の列挙、合法手マスク
+    ├── evaluate.py        # checkpoint 評価 CLI
+    ├── fairness_check.py  # 非公開情報を使わないことの検査
+    ├── game_engine.py     # 学習・評価用ゲームエンジン。Numba 高速化もここに統合済み
+    ├── league.py          # checkpoint リーグ評価と採用候補ランキング
     ├── networks.py        # Regret / Strategy / Value Network
-    ├── observation.py     # 42次元観測とBidTracker
-    ├── parallel.py        # 並列traversal worker
-    ├── search.py          # 推論時rollout search部品
+    ├── observation.py     # 33 次元観測と BidTracker
+    ├── parallel.py        # 並列 traversal worker
     ├── symmetry.py        # 色置換によるデータ拡張
-    ├── train.py           # 学習CLI
-    └── trainer.py         # Deep CFR本体
+    ├── train.py           # 学習 CLI
+    └── trainer.py         # Deep CFR 本体
 ```
 
-## 対戦bot
+`fast_engine.py` は旧高速エンジンです。現行の高速化は `game_engine.py` に統合済みで、現行コードからの import 参照はありません。
 
-### 基本起動
+## 学習方法
+
+基本:
 
 ```bash
-uv run python cfr_ai/clients/cfr_bot.py --url http://127.0.0.1:8765 --room room1 --name DeepCFR --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.train
 ```
 
-### 主なオプション
+途中から再開:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.train --resume
+```
+
+推奨の標準起動:
+
+```bash
+uv --cache-dir .uv-cache run python -u -m cfr_ai.ai.train --resume --workers 7 --iterations 4000 --traversals 2000 --train-steps 100 --target-mode terminal --past-opponent-prob 0.15
+```
+
+短い動作確認:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.train --iterations 1 --traversals 2 --train-steps 1 --workers 1 --eval-every 0 --final-eval-games 0 --archive-every 0 --save-dir .codex_tmp/cfr_smoke
+```
+
+## 主な学習オプション
 
 | オプション | デフォルト | 説明 |
 |---|---:|---|
-| `--url` | `http://127.0.0.1:8765` | 接続先サーバー |
-| `--room` | `room1` | 参加するルームID |
-| `--name` | `DeepCFR` | bot名 |
-| `--checkpoint` | `cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt` | 読み込むcheckpoint |
-| `--temperature` | `0.3` | `strategy` 方策のsoftmax温度。低いほど決定的 |
-| `--policy` | `strategy` | `strategy` または `regret` |
-| `--deterministic` | `False` | サンプリングせず最大確率行動を選ぶ |
-| `--device` | `cpu` | `cpu` / `cuda` |
-
-`--policy strategy` は Strategy Network の平均方策を使います。Deep CFRの基本運用はこちらです。
-
-`--policy regret` は Regret Network の出力から regret matching で方策を作ります。学習が浅いcheckpointではこちらの方が強い場合があるため、評価してから採用してください。
-
-checkpointが存在しない場合、botはランダムプレイにフォールバックします。
-
-## 学習
-
-```bash
-uv run python -m cfr_ai.ai.train
-```
-
-中断時はcheckpointが保存されます。再開する場合:
-
-```bash
-uv run python -m cfr_ai.ai.train --resume
-```
-
-過去の自分を自己対戦相手に混ぜながら学習する場合:
-
-```bash
-uv run python -u -m cfr_ai.ai.train --resume --program-version 1 --archive-every 20 --past-opponent-prob 0.25 --max-past-opponents 8
-```
-
-リーグ評価で作成した候補を過去相手として使う場合:
-
-```bash
-uv run python -u -m cfr_ai.ai.train --resume --past-opponent-selection manifest --past-opponent-manifest cfr_ai/ai/reports/league_YYYYMMDD_HHMMSS/past_opponents.txt --past-opponent-prob 0.25
-```
-
-通常の最新checkpointは `deep_cfr_checkpoint.pt` に保存されます。履歴用checkpointは `deep_cfr_checkpoint_v1_iter000020_run01.pt` のように、プログラムバージョン、反復数、run番号を含む名前で保存されます。既存の履歴ファイルは上書きされません。同じ保存先で新規学習を始めて履歴名が衝突した場合は、`deep_cfr_checkpoint_v1_iter000020_run02.pt` のように別名で保存されます。
-
-`--past-opponent-prob` は、CFR traversal中の非traverser側を一定確率で過去checkpoint由来の凍結済みRegret Networkに置き換える設定です。自己対戦相手が現在の自分だけに寄りすぎるのを避け、過去方策への脆さを減らす目的で使います。
-
-### 主な学習オプション
-
-| オプション | デフォルト | 説明 |
-|---|---:|---|
-| `--iterations` | `10000` | CFR反復回数 |
-| `--traversals` | `1000` | 1反復あたりの自己対戦回数 |
-| `--hidden` | `256` | 隠れ層次元 |
+| `--iterations` | `4000` | CFR の反復回数 |
+| `--traversals` | `2000` | 1 iteration あたりの traversal 数。1 traversal は原則 1 round 分の自己対戦 |
+| `--hidden` | `256` | 各ネットワークの隠れ層サイズ |
 | `--lr` | `5e-4` | 学習率 |
-| `--batch-size` | `2048` | 学習バッチサイズ |
-| `--train-steps` | `150` | 1反復あたりのNN更新回数 |
-| `--max-depth` | `50` | 1traversalの最大ターン数 |
-| `--augments` | `3` | 色対称性データ拡張数 |
-| `--buffer-capacity` | `1000000` | 各bufferの最大サンプル数 |
-| `--save-dir` | `cfr_ai/ai/checkpoints` | checkpoint保存先 |
-| `--save-every` | `20` | N反復ごとに保存 |
-| `--program-version` | `1` | 履歴checkpoint名に入れる互換バージョン |
-| `--archive-every` | `20` | N反復ごとに履歴checkpointを保存。`0` で無効 |
-| `--past-opponent-prob` | `0.25` | 非traverser側に過去の自分を使う確率 |
-| `--max-past-opponents` | `8` | メモリ上に保持する過去方策の最大数 |
-| `--past-opponent-selection` | `recent` | 過去相手の選び方。`recent` / `spread` / `random` / `manifest` |
-| `--past-opponent-manifest` | なし | `manifest` 選択時に読み込むcheckpoint一覧 |
+| `--batch-size` | `2048` | NN 学習バッチサイズ |
+| `--train-steps` | `100` | 1 iteration あたりの NN 更新回数 |
+| `--max-depth` | `50` | 1 traversal の最大ターン数。通常 round 終了まで進める |
+| `--augments` | `3` | 色置換データ拡張数 |
+| `--buffer-capacity` | `1000000` | 各 replay buffer の最大サンプル数 |
+| `--save-dir` | `cfr_ai/ai/checkpoints` | checkpoint 保存先 |
+| `--save-every` | `100` | 通常 checkpoint の保存間隔 |
+| `--archive-every` | `100` | 履歴 checkpoint の保存間隔。`0` で無効 |
+| `--eval-every` | `0` | 学習中の簡易評価間隔。`0` で無効 |
+| `--final-eval-games` | `0` | 学習終了時の評価ゲーム数。`0` で無効 |
+| `--target-mode` | `terminal` | `terminal` は round 終端報酬のみ。`dense` は各 decision point からの差分報酬 |
+| `--score-rand` | 無効 | 隠れスコア乱数化を有効化する。現在はスコアを観測に入れないため通常は使わない |
+| `--epsilon` | `0.3` | 初期探索率。学習進行で decay |
+| `--workers` | `7` | 並列 worker 数。`1` は単一 process |
+| `--past-opponent-prob` | `0.15` | non-traverser に過去の凍結 Regret Network を使う確率 |
+| `--max-past-opponents` | `8` | メモリ上に保持する過去方策数 |
+| `--past-opponent-selection` | `recent` | `recent` / `spread` / `random` / `manifest` |
+| `--past-opponent-manifest` | なし | manifest 選択時に使う checkpoint 一覧 |
 | `--device` | `auto` | `auto` / `cpu` / `cuda` |
-| `--workers` | `7` | 並列worker数。`0` は自動設定、`1` は単一process |
-| `--eval-every` | `50` | N反復ごとの簡易評価。`0` で無効 |
-| `--no-score-rand` | `False` | スコアランダム化を無効化 |
-| `--epsilon` | `0.3` | 初期探索率 |
 
-学習後は、最後のcheckpointをそのまま採用せず、評価で最良のcheckpointと温度を選んでください。
+## iterations / traversals / steps
 
-`--past-opponent-prob` は学習結果に影響します。比較するときは、同じ学習条件で `0.0`、`0.15`、`0.25`、`0.4` などを分けて学習し、後述のcheckpointリーグ評価で比較します。値が高すぎると過去方策への頑健性は上がる一方で、現在方策への収束が遅くなることがあります。
+- `iterations`: CFR の大きな反復単位。各 iteration で traversal を集め、ネットワークを更新します。
+- `traversals`: 自己対戦サンプル数。現行実装では 1 traversal は 1 round を基本単位として進みます。
+- `train-steps`: その iteration で Regret / Strategy / Value Network を何 batch 更新するかです。
+- `steps`: MPPO では環境 step を指しますが、CFR では主に NN 更新回数や内部 turn 数を指すため、文脈で意味が変わります。
 
-## 評価
+## 学習アルゴリズム
 
-### 基本評価
+現行実装は Outcome Sampling MCCFR と Deep CFR の組み合わせです。
 
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500
+1. `new_game()` で自己対戦状態を生成する。
+2. 各 decision point で 33 次元 observation と合法手 mask を作る。
+3. Regret Network の出力から regret matching で方策を作る。
+4. traverser は epsilon 探索を混ぜて行動を sample する。
+5. opponent は現方策、または一定確率で過去 checkpoint の Regret Network から行動する。
+6. round 終了または `max-depth` まで進める。
+7. `target-mode=terminal` では round 全体の終端スコア差を全 decision point の target にする。
+8. `target-mode=dense` では各 decision point 以降に得たスコア差を target にする。
+9. Regret / Strategy / Value buffer にサンプルを追加し、各ネットワークを更新する。
+
+デフォルトは `target-mode=terminal` です。これは金だけを集めるような dense reward の偏りを避けるためです。
+
+## 報酬とスコア
+
+学習時の round 終端価値は次の差分です。
+
+```text
+(traverser の round 後スコア - 初期スコア)
+- (opponent の round 後スコア - 初期スコア)
 ```
 
-評価出力には、勝率だけでなく平均得点差、平均ターン数、平均bid枚数、pass率、金をbidした割合が表示されます。
+round が未終了で `max-depth` に達した場合は、現在の手札に対して `compute_hand_score()` を追加して近似します。
+`compute_hand_score()` は学習時のみ両者の手札を使って色順位を決めます。これは round 終端の真のスコア計算です。
 
-### 温度比較
+一方、観測の index 32 は対戦時との整合性を保つため、自分の手札だけから計算する visible hand potential です。
 
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --temperatures 0.05,0.1,0.2,0.3,0.5
-```
+## 高速化設計
 
-### Regret方策の比較
+`game_engine.py` に Numba JIT 高速化を統合しています。
 
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --policy regret
-```
+- `FafnirState` の `hand`, `bag`, `trash`, `offer`, `scores` は `numpy.ndarray(int32)`。
+- `step_auction()` は `_step_auction_fast()` に接続され、auction resolve、round end 判定、offer setup、round reset まで JIT 側で処理します。
+- `build_observation()` は `build_observation_fast_arrays()` を使います。
+- `get_legal_mask()` は `get_legal_mask_fast()` を使います。
+- `BidTracker.update_from_auction()` は `update_confirmed_fast()` を使います。
+- `train.py` と `parallel.py` は `warmup()` を呼び、初回 JIT compile の遅延を学習本体から外します。
 
-### ヒューリスティック相手
-
-Random相手だけでは強さを測りにくいため、簡易ヒューリスティック相手でも評価します。
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --opponent heuristic
-```
-
-### 金bid分析
-
-金をbidしすぎていないかを確認するには `--gold-report` を使います。
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 1000 --opponent heuristic --temperature 0.3 --gold-report
-```
-
-出力の読み方:
-
-- `gold_bid`: AIの全行動のうち、金を1個以上bidした割合
-- `gold_games`: 評価ゲームのうち、AIが一度でも金をbidしたゲーム割合
-- `diff_gold`: AIが金をbidしたゲームだけの平均得点差
-- `diff_no_gold`: AIが金をbidしなかったゲームだけの平均得点差
-- `gold_actions/game`: 金をbidしたゲームにおける平均金bid回数
-
-`gold_bid` が高く、かつ `diff_gold` が `diff_no_gold` より明確に低い場合、金を使う局面の価値推定が甘い可能性があります。温度を下げる、過去checkpoint比較で金bid率の低いモデルを選ぶ、または追加学習時にそのcheckpointを候補から外す判断材料にしてください。
-
-### checkpointリーグ評価
-
-複数checkpoint、temperature、policyをまとめて比較し、金bid率も含めて採用候補をランキングするには `league.py` を使います。
-
-```bash
-uv run python -m cfr_ai.ai.league --checkpoint-glob "cfr_ai/ai/checkpoints/**/*.pt" --games 1000 --league-games 300 --temperatures 0.1,0.2,0.3 --policies strategy,regret --opponents heuristic --gold-penalty 20
-```
-
-出力は `cfr_ai/ai/reports/league_YYYYMMDD_HHMMSS/` に保存されます。
-
-- `baseline_results.csv`: heuristic/randomなど固定相手への評価結果
-- `league_results.csv`: 上位checkpoint同士の対戦結果
-- `ranking.csv`: 勝率、得点差、金bid率を含めた総合ランキング
-- `past_opponents.txt`: 学習時に `--past-opponent-manifest` へ渡す過去相手候補
-
-`--gold-penalty` はランキング時に金bid率へ掛ける減点係数です。これは推論時の行動を直接変えるものではなく、金bidが多いcheckpointを採用候補から下げるための評価上の重みです。
-
-### 過去checkpointとの比較
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint new_model.pt --vs-checkpoint old_model.pt --games 500
-```
-
-### 複数checkpointから選択
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint-glob "cfr_ai/ai/checkpoints/**/*.pt" --games 500 --temperatures 0.1,0.2,0.3
-```
-
-`BEST` として出力されるcheckpointと温度の組み合わせを、対戦botで使う候補にします。
-
-### フルゲーム評価
-
-通常評価は1ラウンド単位です。スコア状況を含めた実戦寄りの確認には `--full-game` を使います。
-
-```bash
-uv run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 100 --full-game
-```
-
-## フェアプレイ検査
-
-```bash
-uv run python -m cfr_ai.ai.fairness_check
-```
-
-この検査は、サーバーから漏洩情報が届いても行動選択に影響しないことを確認します。具体的には、`action_log`、未解決 `last_result`、相手 `hand`、相手 `last_bid`、相手 `bid_submitted` を変えても、行動用view、観測ベクトル、選択行動が変わらないことを検査します。
-
-botや観測生成を変更した後は、この検査を必ず実行してください。
-
-## アルゴリズム
-
-このAIは Outcome Sampling MCCFR とニューラルネットワーク近似を組み合わせた Deep CFR です。
-
-1. 自己対戦でゲーム木をサンプリングする
-2. 各意思決定点で、選ばなかった行動への後悔値（regret）を推定する
-3. Regret Network が後悔値を近似する
-4. CFR反復中に得られた平均戦略を Strategy Network が学習する
-5. 推論時は Strategy Network、または Regret Network の regret matching 方策を使う
-
-Fafnirは不完全情報かつ同時入札のゲームです。通常の強化学習では特定相手にだけ強い方策へ寄りやすいため、搾取されにくい平均戦略を得る目的でCFR系の手法を使います。
+`state.bid_history` は互換のため属性として残っていますが、現行の学習・評価・クライアントからは参照されていません。
+高速化のため、`step_auction()` 経由では `bid_history` を更新しません。
 
 ## 観測空間
 
-観測は42次元です。
+観測は 33 次元です。
 
 | Index | 内容 | 次元 |
 |---|---|---:|
-| 0-5 | 自分の手札（6色） | 6 |
-| 6-11 | 現在のoffer（6色） | 6 |
-| 12-17 | 捨て札（6色） | 6 |
-| 18-23 | 相手の確定手札（入札履歴から推定） | 6 |
-| 24 | 相手の不確定な手札枚数 | 1 |
-| 25-30 | 自分の確定手札（相手に知られていると推定される石） | 6 |
-| 31 | 山札残数（正規化） | 1 |
-| 32 | 自分が世話係か | 1 |
-| 33 | 自分の手札だけから見た手札ポテンシャル（正規化） | 1 |
-| 34 | 自分のゲームスコア（/1000） | 1 |
-| 35 | 相手のゲームスコア（/1000） | 1 |
-| 36 | ラウンド番号（/20） | 1 |
-| 37 | ターン番号（/30） | 1 |
-| 38 | offer合計枚数（/10） | 1 |
-| 39 | 自分の手札合計（/20） | 1 |
-| 40 | 相手の手札合計（/20） | 1 |
-| 41 | 捨て札合計枚数（正規化） | 1 |
-
-Index 33 は、相手の非公開手札を使わず、自分の手札だけから計算します。学習時とサーバー対戦時で同じ情報だけを使うためです。
+| 0-5 | 自分の手札 counts | 6 |
+| 6-11 | 現在の offer counts | 6 |
+| 12-17 | trash counts | 6 |
+| 18-23 | 相手の confirmed hand | 6 |
+| 24 | 相手の未確定手札枚数 | 1 |
+| 25-30 | 自分の confirmed hand | 6 |
+| 31 | 自分が caretaker か | 1 |
+| 32 | 自分の手札だけから見た visible hand potential | 1 |
 
 ## 行動空間
 
-行動は「どの宝石をbidするか」を6色の個数ベクトルで表します。
+行動は 6 色の bid counts です。
 
-- 最大合計bid数: 6
-- 色ごとの最大bid数: 6
-- 行動数: 924
+- 最大合計 bid 数: `6`
+- 色ごとの最大 bid 数: `6`
+- 行動数: `924`
 
-毎ターン、次の条件で合法手をマスクします。
+合法手条件:
 
-- 手札にない宝石はbidできない
-- offerと同色の宝石はbidできない
-
-`MAX_TOTAL_BID=6` は実用上の計算量と戦略安定性を優先した設定です。大きなbidを可能にすると行動数と学習負荷が増えます。
+- 手札にない石は bid できない。
+- offer と同色の石は bid できない。
 
 ## ネットワーク
 
 | ネットワーク | 入力 | 出力 | 役割 |
 |---|---:|---:|---|
-| Regret Network | 42 | 924 | CFR探索中の後悔値推定 |
-| Strategy Network | 42 | 924 | 推論用の平均方策 |
-| Value Network | 42 | 1 | 途中局面の価値推定 |
+| Regret Network | 33 | 924 | regret を推定し、regret matching に使う |
+| Strategy Network | 33 | 924 | 推論用の平均方策 |
+| Value Network | 33 | 1 | decision point の value baseline |
 
-Regret Network と Strategy Network は Dueling Architecture を使います。
+Regret / Strategy Network は Dueling Architecture です。
 
 ```text
-Input (42)
+Input (33)
   -> Backbone
   -> Value Stream      -> V(s)
   -> Advantage Stream  -> A(s,a)
   -> Output = V(s) + A(s,a) - mean(A(s,*))
 ```
 
-状態全体の良さと行動ごとの差を分けて学習することで、大きめの行動空間でも学習を安定させます。
+## 評価
 
-## 学習上の注意
+基本評価:
 
-- 観測や報酬仕様を変えた後は、古いcheckpointをそのまま強さ比較に使わないでください。観測分布が変わるため、再学習が必要です。
-- `--eval-every` のvs Randomは進捗確認用です。採用モデルの判断には、temperature sweep、heuristic相手、過去checkpoint比較を使ってください。
-- `--policy regret` は短期学習では強い場合がありますが、Deep CFRの基本は平均戦略である `--policy strategy` です。実戦採用前に必ず評価してください。
-- 色対称性データ拡張はサンプル効率を上げますが、非金色には同数順位の優先順があります。強いモデルを作る段階では `--augments` の値も比較対象にしてください。
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500
+```
+
+temperature 比較:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --temperatures 0.05,0.1,0.2,0.3,0.5
+```
+
+Regret 方策比較:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --policy regret
+```
+
+heuristic 相手:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 500 --opponent heuristic
+```
+
+金 bid 率の確認:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 1000 --opponent heuristic --temperature 0.3 --gold-report
+```
+
+full game 評価:
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.evaluate --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt --games 100 --full-game
+```
+
+## checkpoint リーグ評価
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.league --checkpoint-glob "cfr_ai/ai/checkpoints/**/*.pt" --games 1000 --league-games 300 --temperatures 0.1,0.2,0.3 --policies strategy,regret --opponents heuristic --gold-penalty 20
+```
+
+出力先:
+
+- `baseline_results.csv`: random/heuristic など固定相手への評価
+- `league_results.csv`: 上位 checkpoint 同士の対戦
+- `ranking.csv`: 総合ランキング
+- `past_opponents.txt`: `--past-opponent-manifest` に渡せる候補一覧
+
+## 対戦 bot
+
+基本起動:
+
+```bash
+uv --cache-dir .uv-cache run python cfr_ai/clients/cfr_bot.py --url http://127.0.0.1:8765 --room room1 --name DeepCFR --checkpoint cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt
+```
+
+主なオプション:
+
+| オプション | デフォルト | 説明 |
+|---|---:|---|
+| `--url` | `http://127.0.0.1:8765` | 接続先 server |
+| `--room` | `room1` | 参加 room |
+| `--name` | `DeepCFR` | bot 名 |
+| `--checkpoint` | `cfr_ai/ai/checkpoints/deep_cfr_checkpoint.pt` | 読み込む checkpoint |
+| `--temperature` | `0.3` | 方策 softmax 温度。低いほど決定的 |
+| `--policy` | `strategy` | `strategy` または `regret` |
+| `--deterministic` | `False` | 最大確率行動を選ぶ |
+| `--device` | `cpu` | `cpu` / `cuda` |
+
+`strategy` が Deep CFR の基本運用です。`regret` は短期学習 checkpoint で強いことがありますが、採用前に必ず評価してください。
+
+## フェアプレイ検査
+
+```bash
+uv --cache-dir .uv-cache run python -m cfr_ai.ai.fairness_check
+```
+
+この検査は、相手手札、未解決 bid、`action_log` などの漏洩情報が変わっても、fair view、観測、選択行動が変わらないことを確認します。
+
+## 運用上の注意
+
+- 最後の checkpoint を自動採用せず、必ず評価で checkpoint と temperature を選んでください。
+- `--eval-every` の random 評価は進捗確認用です。採用判断には heuristic、temperature sweep、checkpoint リーグを使ってください。
+- 観測、報酬、行動空間、ゲームエンジンを変えた後は、古い checkpoint との強さ比較は参考値扱いにしてください。
+- `target-mode=dense` は解析用に残していますが、通常学習は `terminal` を使ってください。

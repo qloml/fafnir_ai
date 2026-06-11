@@ -4,9 +4,9 @@ Deep CFR Trainer for Fafnir (v2).
 Major improvements over v1:
 - Correct Outcome Sampling MCCFR regret estimation (all legal actions)
 - DCFR (Discounted CFR) weighting scheme
-- Score randomization for game-context learning
+- Optional score randomization, disabled by default because scores are not observed
 - Adaptive exploration (epsilon decay)
-- Observation space: 42 dimensions (was 34)
+- Observation space: 33 dimensions, with game progress and score context removed
 - Dueling network architecture
 
 Implements Deep CFR with Outcome Sampling MCCFR:
@@ -53,7 +53,7 @@ from .networks import (
 from .symmetry import augment_sample, augment_sample_sparse
 
 
-PROGRAM_VERSION = 1
+PROGRAM_VERSION = 2
 LATEST_CHECKPOINT_NAME = "deep_cfr_checkpoint.pt"
 
 
@@ -201,7 +201,7 @@ class DeepCFRTrainer:
         dcfr_beta: float = 0.5,
         dcfr_gamma: float = 2.0,
         # Score randomization
-        score_randomize: bool = True,
+        score_randomize: bool = False,
         target_mode: str = "terminal",
         # Past-self opponent mixing
         program_version: int = PROGRAM_VERSION,
@@ -291,11 +291,11 @@ class DeepCFRTrainer:
     # Score Randomization
     # ============================================================
     def _randomize_scores(self, state: FafnirState):
-        """Inject random starting scores to learn score-dependent strategy.
+        """Optionally inject random starting scores.
 
-        This replaces multi-round traversal at zero cost:
-        - 50% of games: scores are (0, 0) (normal)
-        - 50% of games: random scores to simulate mid-game situations
+        This is disabled by default because current observations intentionally
+        omit scores. Enabling it makes scores a hidden variable that can affect
+        rewards and game end.
         """
         if not self.score_randomize:
             return
@@ -465,7 +465,7 @@ class DeepCFRTrainer:
         v2 improvements:
         - Correct regret estimation for ALL legal actions (not just the chosen one)
         - Adaptive epsilon exploration
-        - Score randomization for game-context learning
+        - Optional score randomization support
 
         At each decision point:
         - Compute strategy from regret network (regret matching)

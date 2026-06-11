@@ -1,36 +1,26 @@
 """
 Observation space builder for Fafnir Deep CFR.
 
-Observation vector (42 dimensions):
+Observation vector (33 dimensions):
   [0-5]   : My hand counts (6 colors)
   [6-11]  : Current offer counts (6 colors)
   [12-17] : Trash counts (6 colors)
   [18-23] : Opponent's confirmed hand (6 colors) - deduced from bid history
   [24]    : Opponent's unknown card count
   [25-30] : My confirmed hand (6 colors) - what opponent knows I have
-  [31]    : Bag remaining count (normalized)
-  [32]    : Am I caretaker? (0 or 1)
-  [33]    : My visible hand potential (normalized, own hand only)
-  --- NEW (v2) ---
-  [34]    : My game score (normalized: /1000)
-  [35]    : Opponent's game score (normalized: /1000)
-  [36]    : Round number (normalized: /20)
-  [37]    : Turn number within round (normalized: /30)
-  [38]    : Offer total stones (normalized: /10)
-  [39]    : My hand total (normalized: /20)
-  [40]    : Opponent's hand total (normalized: /20)
-  [41]    : Trash total (normalized: /36, max = 6 colors × TRASH_LIMIT)
+  [31]    : Am I caretaker? (0 or 1)
+  [32]    : My visible hand potential (normalized, own hand only)
 """
 import numpy as np
 from typing import List, Dict, Any
 
 from .game_engine import (
-    FafnirState, NUM_COLORS, TOTAL_STONES, compute_visible_hand_potential,
-    SCORE_TO_WIN, TRASH_LIMIT, build_observation_fast_arrays, update_confirmed_fast,
+    FafnirState, NUM_COLORS, compute_visible_hand_potential,
+    build_observation_fast_arrays, update_confirmed_fast,
 )
 
 # Observation dimensions
-OBS_DIM = 42
+OBS_DIM = 33
 
 
 # ============================================================
@@ -97,13 +87,12 @@ def build_observation(
     bid_tracker: BidTracker,
 ) -> np.ndarray:
     """
-    Build the 42-dimensional observation vector for a player.
+    Build the 33-dimensional observation vector for a player.
     All values are raw counts except for the normalized fields.
     """
     confirmed = np.asarray(bid_tracker.confirmed, dtype=np.int32)
     return build_observation_fast_arrays(
-        state.hand, state.bag, state.trash, state.offer, state.scores,
-        state.caretaker, player, confirmed, state.round_num, state.turn_num,
+        state.hand, state.trash, state.offer, state.caretaker, player, confirmed,
     )
 
 
@@ -165,46 +154,11 @@ def build_observation_from_server_state(
     for c in range(NUM_COLORS):
         obs[25 + c] = bid_tracker.confirmed[my_index][c]
 
-    # [31] Bag remaining (normalized)
-    bag_left = server_state.get("bag_left", 0)
-    obs[31] = bag_left / TOTAL_STONES
-
-    # [32] Am I caretaker?
+    # [31] Am I caretaker?
     caretaker = server_state.get("caretaker", 0)
-    obs[32] = 1.0 if caretaker == my_index else 0.0
+    obs[31] = 1.0 if caretaker == my_index else 0.0
 
-    my_score = me.get("score", 0)
-    opp_score = them.get("score", 0)
-    # [33] My visible hand potential (same fair feature as training)
-    obs[33] = compute_visible_hand_potential(my_hand_counts)
-
-    # --- NEW (v2) ---
-
-    # [34] My game score (normalized)
-    obs[34] = my_score / SCORE_TO_WIN
-
-    # [35] Opponent's game score (normalized)
-    obs[35] = opp_score / SCORE_TO_WIN
-
-    # [36] Round number (normalized)
-    round_num = server_state.get("round", 1)
-    obs[36] = min(round_num, 20) / 20.0
-
-    # [37] Turn number (normalized)
-    turn_num = server_state.get("turn", 1)
-    obs[37] = min(turn_num, 30) / 30.0
-
-    # [38] Offer total stones (normalized)
-    obs[38] = len(offer) / 10.0
-
-    # [39] My hand total (normalized)
-    obs[39] = sum(my_hand_counts) / 20.0
-
-    # [40] Opponent's hand total (normalized)
-    obs[40] = opp_total / 20.0
-
-    # [41] Trash total (normalized)
-    trash_total = sum(trash.get(c, 0) for c in ALL_COLORS)
-    obs[41] = trash_total / (NUM_COLORS * TRASH_LIMIT)
+    # [32] My visible hand potential (same fair feature as training)
+    obs[32] = compute_visible_hand_potential(my_hand_counts)
 
     return obs
