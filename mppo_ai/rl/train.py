@@ -4,7 +4,7 @@ FAFNIR RL Training Script — Self-play with MaskablePPO.
 
 Usage:
     python mppo_ai/rl/train.py                          # default settings
-    python mppo_ai/rl/train.py --total-steps 2000000    # longer training
+    python mppo_ai/rl/train.py --total-steps 50000000   # longer training
     python mppo_ai/rl/train.py --score-to-win 50        # harder games
 """
 import os
@@ -215,6 +215,12 @@ def train(args):
     print(f"  Max turns/ep:   {args.max_turns}")
     print(f"  N envs:         {args.n_envs}")
     print(f"  Update freq:    {args.update_freq:,}")
+    print(f"  Save freq:      {args.save_freq:,}")
+    print(f"  PPO n_steps:    {args.ppo_n_steps:,}")
+    print(f"  Batch size:     {args.batch_size:,}")
+    print(f"  Gamma:          {args.gamma}")
+    print(f"  Ent coef:       {args.ent_coef}")
+    print(f"  Random opp:     {args.keep_random_ratio:.2f}")
     print(f"  Device:         {args.device}")
     print(f"  Save dir:       {args.save_dir}")
     print("=" * 60)
@@ -233,7 +239,8 @@ def train(args):
                          for _ in range(args.n_envs)])
 
     # Resume or create new model
-    if args.resume and os.path.exists(args.resume):
+    resumed = bool(args.resume and os.path.exists(args.resume))
+    if resumed:
         print(f"Resuming from: {args.resume}")
         model = MaskablePPO.load(args.resume, env=env, device=args.device,
                                   tensorboard_log=log_dir)
@@ -241,15 +248,15 @@ def train(args):
         model = MaskablePPO(
             "MlpPolicy",
             env,
-            learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=256,
-            n_epochs=5,
-            gamma=0.97,
-            gae_lambda=0.95,
-            clip_range=0.2,
-            ent_coef=0.01,
-            vf_coef=0.5,
+            learning_rate=args.learning_rate,
+            n_steps=args.ppo_n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.n_epochs,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
+            ent_coef=args.ent_coef,
+            vf_coef=args.vf_coef,
             max_grad_norm=0.5,
             verbose=1,
             tensorboard_log=log_dir,
@@ -263,7 +270,7 @@ def train(args):
     selfplay_cb = SelfPlayCallback(
         save_path=ckpt_dir,
         update_freq=max(1, args.update_freq // args.n_envs),
-        keep_random_ratio=0.2,
+        keep_random_ratio=args.keep_random_ratio,
         verbose=1,
     )
 
@@ -285,6 +292,7 @@ def train(args):
         total_timesteps=args.total_steps,
         callback=[selfplay_cb, checkpoint_cb, winrate_cb],
         progress_bar=True,
+        reset_num_timesteps=not resumed,
     )
 
     elapsed = time.time() - t0
@@ -300,7 +308,7 @@ def train(args):
 
 def main():
     ap = argparse.ArgumentParser(description="Train FAFNIR RL agent")
-    ap.add_argument("--total-steps", type=int, default=500_000,
+    ap.add_argument("--total-steps", type=int, default=32_000_000,
                     help="Total training timesteps")
     ap.add_argument("--score-to-win", type=int, default=40,
                     help="Score to win (lower = shorter episodes)")
@@ -308,10 +316,30 @@ def main():
                     help="Max turns per episode before truncation")
     ap.add_argument("--n-envs", type=int, default=8,
                     help="Number of parallel environments")
-    ap.add_argument("--update-freq", type=int, default=100_000,
+    ap.add_argument("--update-freq", type=int, default=200_000,
                     help="Steps between self-play opponent updates")
-    ap.add_argument("--save-freq", type=int, default=500_000,
+    ap.add_argument("--save-freq", type=int, default=1_000_000,
                     help="Steps between checkpoint saves")
+    ap.add_argument("--learning-rate", type=float, default=3e-4,
+                    help="PPO learning rate")
+    ap.add_argument("--ppo-n-steps", type=int, default=4096,
+                    help="PPO rollout steps per environment")
+    ap.add_argument("--batch-size", type=int, default=512,
+                    help="PPO minibatch size")
+    ap.add_argument("--n-epochs", type=int, default=5,
+                    help="PPO epochs per rollout")
+    ap.add_argument("--gamma", type=float, default=0.99,
+                    help="PPO discount factor")
+    ap.add_argument("--gae-lambda", type=float, default=0.95,
+                    help="GAE lambda")
+    ap.add_argument("--clip-range", type=float, default=0.2,
+                    help="PPO clip range")
+    ap.add_argument("--ent-coef", type=float, default=0.01,
+                    help="Entropy coefficient")
+    ap.add_argument("--vf-coef", type=float, default=0.5,
+                    help="Value-function loss coefficient")
+    ap.add_argument("--keep-random-ratio", type=float, default=0.25,
+                    help="Probability of using a random self-play opponent")
     ap.add_argument("--save-dir", type=str, default="mppo_ai/rl/output",
                     help="Directory for checkpoints and logs")
     ap.add_argument("--device", type=str, default="auto",

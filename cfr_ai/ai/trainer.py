@@ -43,7 +43,7 @@ from .game_engine import (
     resolve_auction, check_game_end, SCORE_TO_WIN, determine_auction_winner,
 )
 from .action_space import (
-    NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
+    NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts_np, PASS_ACTION_ID,
 )
 from .observation import build_observation, BidTracker, OBS_DIM
 from .networks import (
@@ -202,6 +202,7 @@ class DeepCFRTrainer:
         dcfr_gamma: float = 2.0,
         # Score randomization
         score_randomize: bool = True,
+        target_mode: str = "terminal",
         # Past-self opponent mixing
         program_version: int = PROGRAM_VERSION,
         past_opponent_prob: float = 0.0,
@@ -239,6 +240,9 @@ class DeepCFRTrainer:
 
         # Score randomization
         self.score_randomize = score_randomize
+        if target_mode not in ("terminal", "dense"):
+            raise ValueError(f"target_mode must be 'terminal' or 'dense', got {target_mode!r}")
+        self.target_mode = target_mode
 
         # Networks (v2: Dueling architecture, OBS_DIM input)
         self.regret_net = RegretNetwork(OBS_DIM, NUM_ACTIONS, hidden_dim).to(self.device)
@@ -477,7 +481,7 @@ class DeepCFRTrainer:
         tracker = BidTracker()
         depth = 0
         initial_round = state.round_num
-        initial_scores = state.scores[:]
+        initial_scores = state.scores.copy()
 
         # Collect all decision points for this traversal
         decision_points = []
@@ -557,16 +561,16 @@ class DeepCFRTrainer:
                 'strategies': strategies,
                 'actions': actions,
                 'sample_probs': sample_probs,
-                'offer_snapshot': state.offer[:],
-                'scores_before': state.scores[:],
+                'offer_snapshot': state.offer.copy(),
+                'scores_before': state.scores.copy(),
             })
 
             # Execute auction
-            bid0 = action_id_to_counts(actions[0])
-            bid1 = action_id_to_counts(actions[1])
+            bid0 = action_id_to_counts_np(actions[0])
+            bid1 = action_id_to_counts_np(actions[1])
 
             # Update tracker before step
-            old_offer = state.offer[:]
+            old_offer = state.offer.copy()
             old_caretaker = state.caretaker
             winner = determine_auction_winner(bid0, bid1, old_caretaker)
             step_auction(state, bid0, bid1)
@@ -580,7 +584,7 @@ class DeepCFRTrainer:
 
             depth += 1
 
-        # === Dense Reward Shaping: per-decision-point effective values ===
+        # === Round target values ===
         opp = 1 - traverser
         if state.round_num > initial_round:
             # Round completed — do_round_end() already added hand scores
@@ -591,20 +595,23 @@ class DeepCFRTrainer:
             final_t = state.scores[traverser] + compute_hand_score(state, traverser)
             final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-        # Each decision point sees "how much score was gained from here onward"
-        effective_values = []
-        for dp in decision_points:
-            sb = dp['scores_before']
-            gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
-            effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+        terminal_gained = (final_t - initial_scores[traverser]) - (final_o - initial_scores[opp])
+        terminal_value = max(-1.0, min(1.0, terminal_gained / 50.0))
+        if self.target_mode == "dense":
+            effective_values = []
+            for dp in decision_points:
+                sb = dp['scores_before']
+                gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
+                effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+        else:
+            effective_values = [terminal_value] * len(decision_points)
 
-        # Process with per-point values (replaces flat terminal_value)
+        # Process with either pure terminal targets or per-point dense targets.
         self._process_decision_points(
             decision_points, traverser, effective_values
         )
 
-        # Stats: first point's value = total round value
-        total_value = effective_values[0] if effective_values else 0.0
+        total_value = terminal_value if decision_points else 0.0
         self._baseline += self._baseline_alpha * (total_value - self._baseline)
 
         return total_value
@@ -924,6 +931,7 @@ class DeepCFRTrainer:
                 self.max_depth, self.num_augments, epsilon,
                 self._baseline,
                 self.score_randomize,
+                self.target_mode,
                 regret_sd, value_sd,
                 opponent_sd,
             ))

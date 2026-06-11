@@ -5,19 +5,19 @@ Usage:
     python -m cfr_ai.ai.train [options]
 
 Options:
-    --iterations N       Number of CFR iterations (default: 1000)
-    --traversals N       Traversals per iteration (default: 1000)
-    --hidden N           Hidden layer size (default: 192)
-    --lr FLOAT           Learning rate (default: 1e-3)
+    --iterations N       Number of CFR iterations (default: 4000)
+    --traversals N       Traversals per iteration (default: 2000)
+    --hidden N           Hidden layer size (default: 256)
+    --lr FLOAT           Learning rate (default: 5e-4)
     --batch-size N       Training batch size (default: 2048)
     --train-steps N      Training steps per iteration (default: 100)
     --max-depth N        Max traversal depth (default: 50)
-    --augments N         Symmetry augmentations per sample (default: 1)
+    --augments N         Symmetry augmentations per sample (default: 3)
     --save-dir PATH      Checkpoint save directory
     --resume             Resume from checkpoint
     --device DEVICE      cpu/cuda/auto (default: auto)
-    --workers N          Number of parallel workers (default: 1)
-    --eval-every N       Evaluate vs random every N iterations (default: 50)
+    --workers N          Number of parallel workers (default: 7)
+    --eval-every N       Evaluate vs random every N iterations (default: 0)
     --no-score-rand      Disable score randomization
 """
 import argparse
@@ -26,18 +26,19 @@ import time
 import signal
 import sys
 from .trainer import DeepCFRTrainer, PROGRAM_VERSION
+from .game_engine import warmup as warmup_game_engine
 from .observation import OBS_DIM
 
 
 def main():
     parser = argparse.ArgumentParser(description="Deep CFR Training for Fafnir (v2)")
-    parser.add_argument("--iterations", type=int, default=10000)
-    parser.add_argument("--traversals", type=int, default=1000,
+    parser.add_argument("--iterations", type=int, default=4000)
+    parser.add_argument("--traversals", type=int, default=2000,
                         help="Traversals per iteration (1 traversal = 1 round)")
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--batch-size", type=int, default=2048)
-    parser.add_argument("--train-steps", type=int, default=150)
+    parser.add_argument("--train-steps", type=int, default=100)
     parser.add_argument("--max-depth", type=int, default=50,
                         help="Max depth per traversal (1 round is typically 10-25 turns)")
     parser.add_argument("--augments", type=int, default=3)
@@ -46,23 +47,25 @@ def main():
     parser.add_argument("--save-dir", type=str, default="cfr_ai/ai/checkpoints")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--save-every", type=int, default=20,
+    parser.add_argument("--save-every", type=int, default=100,
                         help="Save checkpoint every N iterations")
     parser.add_argument("--workers", type=int, default=7,
                         help="Parallel workers (0=auto, 1=single-process)")
-    parser.add_argument("--eval-every", type=int, default=50,
+    parser.add_argument("--eval-every", type=int, default=0,
                         help="Evaluate vs random every N iterations (0=disable)")
-    parser.add_argument("--final-eval-games", type=int, default=500,
+    parser.add_argument("--final-eval-games", type=int, default=0,
                         help="Final evaluation games after training (0=disable)")
     parser.add_argument("--no-score-rand", action="store_true",
                         help="Disable score randomization")
+    parser.add_argument("--target-mode", choices=["terminal", "dense"], default="terminal",
+                        help="Training target: pure round terminal value or per-point dense value")
     parser.add_argument("--epsilon", type=float, default=0.3,
                         help="Initial exploration epsilon (decays over training)")
     parser.add_argument("--program-version", type=int, default=PROGRAM_VERSION,
                         help="Program/checkpoint compatibility version used in archive names")
-    parser.add_argument("--archive-every", type=int, default=20,
+    parser.add_argument("--archive-every", type=int, default=100,
                         help="Save versioned checkpoint archive every N iterations (0=disable)")
-    parser.add_argument("--past-opponent-prob", type=float, default=0.25,
+    parser.add_argument("--past-opponent-prob", type=float, default=0.15,
                         help="Probability that the non-traverser uses a frozen past self")
     parser.add_argument("--max-past-opponents", type=int, default=8,
                         help="Maximum archived past opponents kept in memory")
@@ -73,6 +76,8 @@ def main():
     parser.add_argument("--past-opponent-manifest", default=None,
                         help="Text or CSV file listing checkpoint paths to use as past opponents")
     args = parser.parse_args()
+
+    warmup_game_engine()
 
     # Auto-detect workers: cap at 4 to limit memory usage
     if args.workers <= 0:
@@ -93,6 +98,7 @@ def main():
         save_dir=args.save_dir,
         num_workers=args.workers,
         score_randomize=not args.no_score_rand,
+        target_mode=args.target_mode,
         program_version=args.program_version,
         past_opponent_prob=args.past_opponent_prob,
         max_past_opponents=args.max_past_opponents,
@@ -137,6 +143,7 @@ def main():
     print(f"  Workers: {args.workers}")
     print(f"  Device: {trainer.device}")
     print(f"  Score randomization: {not args.no_score_rand}")
+    print(f"  Target mode: {args.target_mode}")
     print(f"  Save dir: {args.save_dir}")
     print(f"  Program version: v{args.program_version}")
     print(f"  Archive every: {args.archive_every} iters")

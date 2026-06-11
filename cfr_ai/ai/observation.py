@@ -26,7 +26,7 @@ from typing import List, Dict, Any
 
 from .game_engine import (
     FafnirState, NUM_COLORS, TOTAL_STONES, compute_visible_hand_potential,
-    SCORE_TO_WIN, TRASH_LIMIT,
+    SCORE_TO_WIN, TRASH_LIMIT, build_observation_fast_arrays, update_confirmed_fast,
 )
 
 # Observation dimensions
@@ -51,7 +51,7 @@ class BidTracker:
 
     def __init__(self):
         # confirmed[player][color] = count of stones we KNOW they have
-        self.confirmed = [[0]*NUM_COLORS, [0]*NUM_COLORS]
+        self.confirmed = np.zeros((2, NUM_COLORS), dtype=np.int32)
 
     def update_from_auction(
         self,
@@ -75,24 +75,17 @@ class BidTracker:
         if is_no_bid:
             return
 
-        loser = 1 - winner
-
-        # Winner: we saw their bid, those went to trash, they got offer
-        # After auction: winner's confirmed = old_confirmed - bid + offer
-        for c in range(NUM_COLORS):
-            # Remove bid from confirmed (they no longer have those)
-            self.confirmed[winner][c] = max(0, self.confirmed[winner][c] - bid_winner[c])
-            # Add offer to confirmed (they definitely have these now)
-            self.confirmed[winner][c] += offer[c]
-
-        # Loser: their bid was revealed, so we know they have those
-        for c in range(NUM_COLORS):
-            # We at least know they have bid_loser[c] of this color
-            self.confirmed[loser][c] = max(self.confirmed[loser][c], bid_loser[c])
+        update_confirmed_fast(
+            self.confirmed,
+            np.int32(winner),
+            np.asarray(bid_winner, dtype=np.int32),
+            np.asarray(bid_loser, dtype=np.int32),
+            np.asarray(offer, dtype=np.int32),
+        )
 
     def reset(self):
         """Reset for new round."""
-        self.confirmed = [[0]*NUM_COLORS, [0]*NUM_COLORS]
+        self.confirmed.fill(0)
 
 
 # ============================================================
@@ -107,65 +100,11 @@ def build_observation(
     Build the 42-dimensional observation vector for a player.
     All values are raw counts except for the normalized fields.
     """
-    obs = np.zeros(OBS_DIM, dtype=np.float32)
-    opp = 1 - player
-
-    # [0-5] My hand
-    obs[0:6] = state.hand[player]
-
-    # [6-11] Current offer
-    obs[6:12] = state.offer
-
-    # [12-17] Trash
-    obs[12:18] = state.trash
-
-    # [18-23] Opponent's confirmed hand
-    obs[18:24] = bid_tracker.confirmed[opp]
-
-    # [24] Opponent's unknown card count
-    opp_total = sum(state.hand[opp])
-    opp_confirmed_total = sum(bid_tracker.confirmed[opp])
-    obs[24] = max(0, opp_total - opp_confirmed_total)
-
-    # [25-30] My confirmed hand (what opponent knows about me)
-    obs[25:31] = bid_tracker.confirmed[player]
-
-    # [31] Bag remaining (normalized to [0, 1])
-    obs[31] = state.bag_left() / TOTAL_STONES
-
-    # [32] Am I caretaker?
-    obs[32] = 1.0 if state.caretaker == player else 0.0
-
-    # [33] My visible hand potential (normalized, own hand only)
-    obs[33] = compute_visible_hand_potential(state.hand[player])
-
-    # --- NEW (v2) ---
-
-    # [34] My game score (normalized)
-    obs[34] = state.scores[player] / SCORE_TO_WIN
-
-    # [35] Opponent's game score (normalized)
-    obs[35] = state.scores[opp] / SCORE_TO_WIN
-
-    # [36] Round number (normalized, cap at 20)
-    obs[36] = min(state.round_num, 20) / 20.0
-
-    # [37] Turn number within round (normalized, cap at 30)
-    obs[37] = min(state.turn_num, 30) / 30.0
-
-    # [38] Offer total stones (normalized)
-    obs[38] = sum(state.offer) / 10.0
-
-    # [39] My hand total (normalized)
-    obs[39] = sum(state.hand[player]) / 20.0
-
-    # [40] Opponent's hand total (normalized)
-    obs[40] = opp_total / 20.0
-
-    # [41] Trash total (normalized by max trash capacity)
-    obs[41] = sum(state.trash) / (NUM_COLORS * TRASH_LIMIT)
-
-    return obs
+    confirmed = np.asarray(bid_tracker.confirmed, dtype=np.int32)
+    return build_observation_fast_arrays(
+        state.hand, state.bag, state.trash, state.offer, state.scores,
+        state.caretaker, player, confirmed, state.round_num, state.turn_num,
+    )
 
 
 def build_observation_from_server_state(

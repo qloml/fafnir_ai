@@ -22,7 +22,7 @@ from typing import List, Tuple, Dict, Optional
 from itertools import product
 import numpy as np
 
-from .game_engine import NUM_COLORS, ALL_COLORS, COLOR_TO_IDX
+from .game_engine import NUM_COLORS, ALL_COLORS, COLOR_TO_IDX, get_legal_mask_fast
 
 # ============================================================
 # Action Enumeration
@@ -96,23 +96,9 @@ def get_legal_mask(hand: List[int], offer: List[int]) -> np.ndarray:
 
     Uses vectorized NumPy operations for speed.
     """
-    hand_arr = np.array(hand, dtype=np.int32)
-    offer_arr = np.array(offer, dtype=np.int32)
-
-    # Check 1: All bid counts <= hand counts (per color)
-    # ACTION_TABLE_NP: [N, 6], hand_arr: [6] -> broadcast to [N, 6]
-    hand_ok = np.all(ACTION_TABLE_NP <= hand_arr, axis=1)
-
-    # Check 2: For colors in offer (offer > 0), bid must be 0
-    forbidden_colors = offer_arr > 0  # shape [6], bool
-    if forbidden_colors.any():
-        # For forbidden colors, action must have 0
-        forbidden_ok = np.all(ACTION_TABLE_NP[:, forbidden_colors] == 0, axis=1)
-        mask = hand_ok & forbidden_ok
-    else:
-        mask = hand_ok
-
-    return mask
+    hand_arr = np.asarray(hand, dtype=np.int32)
+    offer_arr = np.asarray(offer, dtype=np.int32)
+    return get_legal_mask_fast(hand_arr, offer_arr, ACTION_TABLE_NP)
 
 
 def get_legal_action_ids(hand: List[int], offer: List[int]) -> List[int]:
@@ -124,6 +110,11 @@ def get_legal_action_ids(hand: List[int], offer: List[int]) -> List[int]:
 def action_id_to_counts(action_id: int) -> List[int]:
     """Convert action ID to count vector."""
     return list(ACTION_TABLE[action_id])
+
+
+def action_id_to_counts_np(action_id: int) -> np.ndarray:
+    """Convert action ID to a read-only count vector view."""
+    return ACTION_TABLE_NP[action_id]
 
 
 def counts_to_action_id(counts: List[int]) -> Optional[int]:

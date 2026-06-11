@@ -168,7 +168,7 @@ def check_tracker_idempotence() -> None:
     cfr_bot.update_tracker_from_state(st)
     twice = copy.deepcopy(cfr_bot.bid_tracker.confirmed)
 
-    if once != twice:
+    if not np.array_equal(once, twice):
         raise AssertionError(f"tracker update is not idempotent: {once!r} != {twice!r}")
 
 

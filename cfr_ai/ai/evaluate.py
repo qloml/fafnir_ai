@@ -25,6 +25,7 @@ from .action_space import (
     NUM_ACTIONS,
     PASS_ACTION_ID,
     action_id_to_counts,
+    action_id_to_counts_np,
     get_legal_mask,
 )
 from .game_engine import (
@@ -327,7 +328,7 @@ def play_one_eval_game(
     state = new_game()
     tracker = BidTracker()
     initial_round = state.round_num
-    initial_scores = state.scores[:]
+    initial_scores = state.scores.copy()
     last_round = state.round_num
     turns = 0
     ai_gold_actions = 0
@@ -357,8 +358,8 @@ def play_one_eval_game(
                 deterministic,
             )
 
-        bid0 = action_id_to_counts(action_ids[0])
-        bid1 = action_id_to_counts(action_ids[1])
+        bid0 = action_id_to_counts_np(action_ids[0])
+        bid1 = action_id_to_counts_np(action_ids[1])
 
         if stats is not None:
             ai_bid = bid0 if ai_player == 0 else bid1
@@ -366,7 +367,7 @@ def play_one_eval_game(
             if ai_bid[0] > 0:
                 ai_gold_actions += 1
 
-        old_offer = state.offer[:]
+        old_offer = state.offer.copy()
         old_caretaker = state.caretaker
         step_auction(state, bid0, bid1)
         update_tracker_after_step(tracker, old_offer, old_caretaker, bid0, bid1)

@@ -24,9 +24,10 @@ from .game_engine import (
     compute_hand_score, clamp_score, is_trash_limit_reached,
     should_force_round_end_by_bag, setup_offer, do_round_end,
     resolve_auction, check_game_end, SCORE_TO_WIN, determine_auction_winner,
+    warmup as warmup_game_engine,
 )
 from .action_space import (
-    NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts, PASS_ACTION_ID,
+    NUM_ACTIONS, ACTION_TABLE, get_legal_mask, action_id_to_counts_np, PASS_ACTION_ID,
 )
 from .observation import build_observation, BidTracker, OBS_DIM
 from .networks import (
@@ -64,6 +65,7 @@ def _worker_init(hidden_dim: int):
 
     _w_opp_regret_net = RegretNetwork(OBS_DIM, NUM_ACTIONS, hidden_dim)
     _w_opp_regret_net.eval()
+    warmup_game_engine()
 
 
 def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
@@ -73,7 +75,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     Args:
         args: (num_traversals, start_traversal_id, iteration,
                max_depth, num_augments, explore_epsilon,
-               baseline, score_randomize,
+               baseline, score_randomize, target_mode,
                regret_state_dict, value_state_dict, opponent_regret_state_dict)
 
     Returns:
@@ -81,7 +83,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
     """
     (num_traversals, start_traversal_id, iteration,
      max_depth, num_augments, explore_epsilon,
-     baseline, score_randomize,
+     baseline, score_randomize, target_mode,
      regret_sd, value_sd, opponent_sd) = args
 
     # Load updated weights for this iteration
@@ -105,7 +107,7 @@ def _worker_traverse_batch(args: Tuple) -> Dict[str, Any]:
         traverser = (start_traversal_id + i) % 2
         value, r_samps, s_samps, v_samps = _single_traverse(
             traverser, iteration, max_depth, num_augments, explore_epsilon,
-            baseline, score_randomize, opponent_net
+            baseline, score_randomize, target_mode, opponent_net
         )
         total_value += value
         regret_samples.extend(r_samps)
@@ -129,6 +131,7 @@ def _single_traverse(
     explore_epsilon: float,
     baseline: float = 0.0,
     score_randomize: bool = True,
+    target_mode: str = "terminal",
     opponent_net=None,
 ) -> Tuple[float, list, list, list]:
     """
@@ -147,7 +150,7 @@ def _single_traverse(
     tracker = BidTracker()
     depth = 0
     initial_round = state.round_num
-    initial_scores = state.scores[:]
+    initial_scores = state.scores.copy()
 
     decision_points = []
 
@@ -218,13 +221,13 @@ def _single_traverse(
             'strategies': strategies,
             'actions': actions,
             'sample_probs': sample_probs,
-            'offer_snapshot': state.offer[:],
-            'scores_before': state.scores[:],
+            'offer_snapshot': state.offer.copy(),
+            'scores_before': state.scores.copy(),
         })
 
-        bid0 = action_id_to_counts(actions[0])
-        bid1 = action_id_to_counts(actions[1])
-        old_offer = state.offer[:]
+        bid0 = action_id_to_counts_np(actions[0])
+        bid1 = action_id_to_counts_np(actions[1])
+        old_offer = state.offer.copy()
         old_caretaker = state.caretaker
         winner = determine_auction_winner(bid0, bid1, old_caretaker)
         step_auction(state, bid0, bid1)
@@ -237,7 +240,7 @@ def _single_traverse(
 
         depth += 1
 
-    # === Dense Reward Shaping: per-decision-point effective values ===
+    # === Round target values ===
     opp = 1 - traverser
     if state.round_num > initial_round:
         final_t = state.scores[traverser]
@@ -246,18 +249,23 @@ def _single_traverse(
         final_t = state.scores[traverser] + compute_hand_score(state, traverser)
         final_o = state.scores[opp] + compute_hand_score(state, opp)
 
-    effective_values = []
-    for dp in decision_points:
-        sb = dp['scores_before']
-        gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
-        effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+    terminal_gained = (final_t - initial_scores[traverser]) - (final_o - initial_scores[opp])
+    terminal_value = max(-1.0, min(1.0, terminal_gained / 50.0))
+    if target_mode == "dense":
+        effective_values = []
+        for dp in decision_points:
+            sb = dp['scores_before']
+            gained_from_here = (final_t - sb[traverser]) - (final_o - sb[opp])
+            effective_values.append(max(-1.0, min(1.0, gained_from_here / 50.0)))
+    else:
+        effective_values = [terminal_value] * len(decision_points)
 
     # Process decision points with per-point values
     regret_samples, strategy_samples, value_samples = _process_decision_points(
         decision_points, traverser, effective_values, iteration, num_augments
     )
 
-    total_value = effective_values[0] if effective_values else 0.0
+    total_value = terminal_value if effective_values else 0.0
     return total_value, regret_samples, strategy_samples, value_samples
 
 
