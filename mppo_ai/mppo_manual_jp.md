@@ -84,7 +84,21 @@ python mppo_ai/rl/evaluate.py --model mppo_ai/rl/output/fafnir_final.zip [オプ
 | `--games` | `200` | 各ボットとの対戦回数。 |
 | `--deterministic` | 指定なし | 確率的に揺らがない最強の手を選ぶ。 |
 
-### 3.3. クライアント起動
+### 3.3. checkpoint リーグ評価
+```bash
+python -m mppo_ai.rl.league
+```
+
+出力先:
+
+- `baseline_results.csv`: 固定相手への評価
+- `league_results.csv`: checkpoint 同士の対戦
+- `ranking.csv`: 総合ランキング
+- `past_opponents.txt`: 学習時に渡せる候補一覧
+
+CSV の `checkpoint` と `opponent_checkpoint` は、リポジトリ基準の相対パスで出力されます。
+
+### 3.4. クライアント起動
 
 #### ① RLボット (`mppo_ai/clients/rl_bot_v3.py`)
 ```bash

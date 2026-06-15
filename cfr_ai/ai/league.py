@@ -25,6 +25,9 @@ from .evaluate import (
     set_seed,
 )
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PATH_FIELDS = {"checkpoint", "opponent_checkpoint"}
+
 
 @dataclass
 class EvalRow:
@@ -51,6 +54,19 @@ class EvalRow:
 
 def parse_csv_list(text: str) -> List[str]:
     return [x.strip() for x in text.split(",") if x.strip()]
+
+
+def to_report_path(path: str) -> str:
+    if not path:
+        return ""
+    return os.path.relpath(os.path.abspath(path), PROJECT_ROOT)
+
+
+def row_for_csv(row: Dict[str, object]) -> Dict[str, object]:
+    return {
+        key: to_report_path(str(value)) if key in PATH_FIELDS else value
+        for key, value in row.items()
+    }
 
 
 def checkpoint_sort_key(path: str) -> Tuple[int, str]:
@@ -132,7 +148,7 @@ def write_rows(path: str, rows: Iterable[EvalRow]) -> None:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].__dict__.keys()))
         writer.writeheader()
         for row in rows:
-            writer.writerow(row.__dict__)
+            writer.writerow(row_for_csv(row.__dict__))
 
 
 def evaluate_config(
@@ -248,7 +264,7 @@ def write_ranking(path: str, ranking: List[Dict[str, object]]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for item in ranking:
-            writer.writerow(item)
+            writer.writerow(row_for_csv(item))
 
 
 def write_past_opponents(path: str, ranking: List[Dict[str, object]], count: int) -> None:

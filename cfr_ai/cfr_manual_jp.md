@@ -256,6 +256,8 @@ uv --cache-dir .uv-cache run python -m cfr_ai.ai.league --checkpoint-glob "cfr_a
 - `ranking.csv`: 総合ランキング
 - `past_opponents.txt`: `--past-opponent-manifest` に渡せる候補一覧
 
+CSV の `checkpoint` と `opponent_checkpoint` は、リポジトリ基準の相対パスで出力されます。
+
 ## 対戦 bot
 
 基本起動:
