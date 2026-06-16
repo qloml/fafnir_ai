@@ -50,17 +50,6 @@ python clients/ai_bot_sample.py --name DummyBot --room room1
 | `--room` | `room1` | 入室するルーム名。 |
 | `--name` | `Bot` | 画面に表示されるAIの名前。 |
 
-### ③ `clients/spectator_gui.py` (観戦用GUI)
-Pygameを使用したデスクトップ用の観戦画面です。
-対戦には参加せず、現在の盤面や両者の手札（公開情報のみ）をグラフィカルに表示します。
-```bash
-python clients/spectator_gui.py --room room1
-```
-| 引数 | デフォルト | 説明 |
-| :--- | :--- | :--- |
-| `--url` | `http://127.0.0.1:8765` | 接続先のサーバーURL。 |
-| `--room` | `room1` | 観戦するルーム名。 |
-
-### ④ `clients/web_gui/` (ブラウザ用UI)
+### ③ `clients/web_gui/` (ブラウザ用UI)
 ブラウザ上で人間がグラフィカルにプレイするためのWebフロントエンド一式（HTML/CSS/JS）です。
 `clients/web_gui/index.html` をブラウザで開くことで、サーバーに接続してプレイできます。特別なコマンドライン起動は不要です。
