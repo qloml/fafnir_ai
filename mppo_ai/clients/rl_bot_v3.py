@@ -33,6 +33,7 @@ model: Optional[MaskablePPO] = None
 
 _action_lock = asyncio.Lock()
 _ok_sent_key: Optional[str] = None
+_bid_sent_key: Optional[str] = None
 _restart_sent = False
 
 AUTO_NEXT = True
@@ -277,18 +278,23 @@ def current_bidder(st: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-async def _emit_safe(event: str, payload: Dict[str, Any]):
+async def _emit_safe(event: str, payload: Dict[str, Any]) -> bool:
     if not sio.connected:
-        return
+        return False
     try:
         await sio.emit(event, payload)
+        return True
     except Exception as e:
         print(f"[RL] emit error: {repr(e)}")
+        return False
 
 
 async def do_submit_bid(st: Dict[str, Any]):
-    global model
+    global model, _bid_sent_key
     if model is None or my_index is None:
+        return
+    key = f"{phase_of(st)}:{st.get('round')}:{st.get('turn')}:{my_index}:{current_bidder(st)}"
+    if _bid_sent_key == key:
         return
 
     obs = state_to_obs(st, my_index)
@@ -301,7 +307,8 @@ async def do_submit_bid(st: Dict[str, Any]):
 
     print(f"[RL] Bidding: {stones} (action={action})")
     await asyncio.sleep(THINK_DELAY)
-    await _emit_safe("submit_bid", {"room_id": cfg["room"], "stones": stones})
+    if await _emit_safe("submit_bid", {"room_id": cfg["room"], "stones": stones}):
+        _bid_sent_key = key
 
 
 async def do_ok_next(st: Dict[str, Any]):
@@ -324,7 +331,7 @@ async def do_ok_next(st: Dict[str, Any]):
 
 
 async def do_restart_game():
-    global _restart_sent, _known, _prev_round, _last_processed_auction, _ok_sent_key
+    global _restart_sent, _known, _prev_round, _last_processed_auction, _ok_sent_key, _bid_sent_key
     if _restart_sent:
         return
     _restart_sent = True
@@ -333,6 +340,7 @@ async def do_restart_game():
     _prev_round = -1
     _last_processed_auction = None
     _ok_sent_key = None
+    _bid_sent_key = None
     print("[RL] Game ended — sending restart_game")
     await asyncio.sleep(THINK_DELAY)
     await _emit_safe("restart_game", {"room_id": cfg["room"]})
@@ -394,17 +402,18 @@ async def disconnect():
 
 @sio.on("player_assigned")
 async def player_assigned(data):
-    global my_index
+    global my_index, _bid_sent_key
     try:
         my_index = int(data.get("index"))
     except Exception:
         my_index = None
+    _bid_sent_key = None
     print(f"[RL] Assigned index = {my_index}")
 
 
 @sio.on("state_update")
 async def state_update(state):
-    global last_state, _ok_sent_key, my_index
+    global last_state, _ok_sent_key, _bid_sent_key, my_index
     last_state = state
 
     # Auto-correct my_index by finding our name in the players list.
@@ -413,12 +422,12 @@ async def state_update(state):
     # without sending us a new player_assigned event.
     ps = state.get("players") or []
     my_name = cfg["name"]
-    for i, p in enumerate(ps):
-        if p.get("name") == my_name:
-            if my_index != i:
-                print(f"[RL] Index corrected: {my_index} -> {i}")
-                my_index = i
-            break
+    matches = [i for i, p in enumerate(ps) if p.get("name") == my_name]
+    if len(matches) == 1:
+        i = matches[0]
+        if my_index != i:
+            print(f"[RL] Index corrected: {my_index} -> {i}")
+            my_index = i
 
     # Update known-hand tracking
     if my_index is not None:
@@ -426,10 +435,14 @@ async def state_update(state):
     ph = phase_of(state)
     if ph not in ("RESULT", "ROUND_END"):
         _ok_sent_key = None
+    if ph != "BIDDING":
+        _bid_sent_key = None
 
 
 @sio.on("bid_rejected")
 async def bid_rejected(data):
+    global _bid_sent_key
+    _bid_sent_key = None
     msg = data.get("message") or data.get("reason") or "rejected"
     print(f"[RL] BID REJECTED: {msg}")
 
